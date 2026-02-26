@@ -539,6 +539,7 @@ const Index = () => {
         initAudio();
         audio.playPlanetClick();
         targetPlanet = hits[0].object as THREE.Mesh;
+        console.log('CLICKED:', targetPlanet.userData, 'obj:', targetPlanet);
         targetPlanetData = ssBodies.find((b: any) => b.mesh===targetPlanet);
         isTransitioning = true;
         cameraLight.intensity = 1.0;
