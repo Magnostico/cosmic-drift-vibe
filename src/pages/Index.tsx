@@ -5,6 +5,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { SpaceAudioEngine } from '../lib/spaceAudio';
 import '../styles/universe.css';
 
 const Index = () => {
@@ -32,6 +33,9 @@ const Index = () => {
     let isTransitioning = false;
     let cameraView = 'chase';
     let toastTimeout: ReturnType<typeof setTimeout>;
+    const audio = new SpaceAudioEngine();
+    let audioInitialized = false;
+    const initAudio = () => { if (!audioInitialized) { audio.init(); audioInitialized = true; } };
 
     // ── RENDERER ──
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, logarithmicDepthBuffer: true });
@@ -498,7 +502,7 @@ const Index = () => {
       if (e.code==='ShiftLeft'||e.code==='ShiftRight') keys.brake=true;
       if (flightModeActive) {
         const thr: Record<string, [number, string]> = { Digit1:[0.0002,"SCENIC CRUISE"], Digit2:[0.001,"IMPULSE"], Digit3:[0.005,"COMBAT"], Digit4:[0.02,"HYPERDRIVE"] };
-        if (thr[e.code]) { currentThrust = thr[e.code][0]; showToast("THRUST: "+thr[e.code][1]); }
+        if (thr[e.code]) { currentThrust = thr[e.code][0]; showToast("THRUST: "+thr[e.code][1]); audio.playGearShift(Object.keys(thr).indexOf(e.code)+1); }
         if (e.code==='KeyC') {
           cameraView = cameraView==='chase' ? 'cockpit' : 'chase';
           showToast(cameraView==='cockpit' ? "COCKPIT VIEW" : "CHASE CAM");
@@ -532,6 +536,8 @@ const Index = () => {
       raycaster.setFromCamera(mouse, camera);
       const hits = raycaster.intersectObjects(interactables);
       if (hits.length > 0) {
+        initAudio();
+        audio.playPlanetClick();
         targetPlanet = hits[0].object as THREE.Mesh;
         targetPlanetData = ssBodies.find((b: any) => b.mesh===targetPlanet);
         isTransitioning = true;
@@ -591,11 +597,14 @@ const Index = () => {
     initMilkyWay();
 
     document.getElementById('target-marker')!.onclick = () => {
+      initAudio();
+      audio.playTransition();
       fadeOverlay.style.opacity = '1';
       setTimeout(() => { initSolarSystem(); fadeOverlay.style.opacity = '0'; }, 1000);
     };
 
     document.getElementById('btn-back-galaxy')!.addEventListener('click', () => {
+      initAudio(); audio.playTransition();
       fadeOverlay.style.opacity = '1';
       setTimeout(() => {
         flightModeActive = false; gravityEnabled = false; orreryMode = false;
@@ -625,7 +634,9 @@ const Index = () => {
     });
 
     document.getElementById('btn-flight-mode')!.onclick = () => {
+      initAudio();
       flightModeActive = !flightModeActive;
+      audio.playToggle(flightModeActive);
       controls.enabled = !flightModeActive;
       targetPlanet = null;
       document.getElementById('btn-back-system')!.style.display = 'none';
@@ -649,14 +660,14 @@ const Index = () => {
     };
 
     document.getElementById('btn-toggle-orbits')!.addEventListener('click', () => {
-      showOrbits = !showOrbits;
+      initAudio(); showOrbits = !showOrbits; audio.playToggle(showOrbits);
       orbitLineObjects.forEach(l => l.visible = showOrbits);
       document.getElementById('btn-toggle-orbits')!.className = showOrbits ? 'btn-active' : '';
       showToast(showOrbits ? "ORBITAL PATHS: ON" : "ORBITAL PATHS: OFF");
     });
 
     document.getElementById('btn-orrery')!.addEventListener('click', () => {
-      orreryMode = !orreryMode;
+      initAudio(); orreryMode = !orreryMode; audio.playToggle(orreryMode);
       document.getElementById('btn-orrery')!.className = orreryMode ? 'btn-active' : '';
       document.getElementById('orrery-label')!.style.display = orreryMode ? 'block' : 'none';
       if (orreryMode) {
@@ -672,7 +683,7 @@ const Index = () => {
     });
 
     document.getElementById('btn-gravity')!.addEventListener('click', () => {
-      gravityEnabled = !gravityEnabled;
+      initAudio(); gravityEnabled = !gravityEnabled; audio.playToggle(gravityEnabled);
       document.getElementById('btn-gravity')!.className = gravityEnabled ? 'btn-active' : '';
       document.getElementById('gravity-indicator')!.style.display = gravityEnabled ? 'block' : 'none';
       document.getElementById('grav-status')!.innerText = gravityEnabled ? 'ON' : 'OFF';
@@ -823,9 +834,13 @@ const Index = () => {
             shipVelocity.add(dir.multiplyScalar(currentThrust * 60 * dt));
             targetGlow = 2.5;
             for (let i = 0; i < 3; i++) spawnTrailParticle();
+            audio.updateThrust(Math.min(currentThrust / 0.02, 1));
           } else if (keys.brake) {
             shipVelocity.multiplyScalar(Math.pow(0.1, dt));
             targetGlow = 0.8;
+            audio.updateThrust(0.15);
+          } else {
+            audio.updateThrust(0);
           }
 
           if (engineGlow) engineGlow.intensity += (targetGlow - engineGlow.intensity) * 10 * dt;
@@ -950,6 +965,7 @@ const Index = () => {
       window.removeEventListener('click', onClick);
       window.removeEventListener('resize', onResize);
       renderer.dispose();
+      audio.dispose();
       if (canvasRef.current && renderer.domElement.parentNode === canvasRef.current) {
         canvasRef.current.removeChild(renderer.domElement);
       }
