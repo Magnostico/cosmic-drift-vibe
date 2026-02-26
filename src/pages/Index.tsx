@@ -1,12 +1,34 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+import { useState } from 'react';
+import SolarSystem from '@/components/SolarSystem';
+import UIOverlay from '@/components/UIOverlay';
+import { type PlanetData } from '@/data/planets';
 
 const Index = () => {
+  const [selectedPlanet, setSelectedPlanet] = useState<PlanetData | null>(null);
+  const [timeSpeed, setTimeSpeed] = useState(1);
+  const [paused, setPaused] = useState(false);
+  const [showOrbits, setShowOrbits] = useState(true);
+  const [showInfo, setShowInfo] = useState(true);
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background">
-      <div className="text-center">
-        <h1 className="mb-4 text-4xl font-bold">Welcome to Your Blank App</h1>
-        <p className="text-xl text-muted-foreground">Start building your amazing project here!</p>
-      </div>
+    <div className="relative w-screen h-screen overflow-hidden bg-background">
+      <SolarSystem
+        timeSpeed={timeSpeed}
+        paused={paused}
+        showOrbits={showOrbits}
+        onPlanetClick={setSelectedPlanet}
+      />
+      <UIOverlay
+        selectedPlanet={selectedPlanet}
+        timeSpeed={timeSpeed}
+        paused={paused}
+        showOrbits={showOrbits}
+        showInfo={showInfo}
+        setTimeSpeed={setTimeSpeed}
+        setPaused={setPaused}
+        setShowOrbits={setShowOrbits}
+        setShowInfo={setShowInfo}
+      />
     </div>
   );
 };
