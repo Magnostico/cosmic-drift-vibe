@@ -842,7 +842,7 @@ const Index = () => {
         const sc = new THREE.Box3().setFromObject(model);
         const ctr = new THREE.Vector3(); sc.getCenter(ctr);
         model.position.sub(ctr);
-        model.rotation.y = Math.PI;
+        // Don't rotate - keep cockpit aligned with ship direction (-Z forward)
         // Make all cockpit materials double-sided, reduce emissive, and use proper materials
         model.traverse((child: any) => {
           if (child.isMesh && child.material) {
@@ -1032,13 +1032,11 @@ const Index = () => {
             const mesh2 = playerShip.getObjectByName('TheShipModel');
             if (mesh2) mesh2.visible = false;
             cockpitGroup.visible = cockpitLoaded;
-            // Turn on cockpit lights
             cockpitLight.intensity = 0.6;
             cockpitDirLight.intensity = 0.4;
-            // Reduce bloom in cockpit view
             bloomPass.strength = 0.3;
-            // Place camera at ship origin (center of cockpit), slightly up for pilot eye height
-            const cPos = new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.12, 0).applyMatrix4(playerShip.matrixWorld);
+            // Camera at pilot seat: slightly up, slightly back (+Z since ship faces -Z)
+            const cPos = new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.15, TARGET_SHIP_SIZE * 0.25).applyMatrix4(playerShip.matrixWorld);
             camera.position.copy(cPos);
             camera.quaternion.copy(playerShip.quaternion);
           } else {
