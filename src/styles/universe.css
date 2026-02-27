@@ -4,6 +4,7 @@
     --danger: #ff4d4d;
     --success: #4dff91;
     --purple: #b44dff;
+    --cockpit: #ff8844;
     --glass: rgba(8, 14, 28, 0.82);
     --border-universe: rgba(79, 195, 247, 0.18);
 }
@@ -58,6 +59,8 @@
 .btn-success:hover { background: rgba(77,255,145,0.25) !important; border-color: var(--success) !important; box-shadow: 0 0 14px rgba(77,255,145,0.35) !important; }
 .btn-purple { border-color: rgba(180,77,255,0.4) !important; }
 .btn-purple:hover { background: rgba(180,77,255,0.3) !important; border-color: var(--purple) !important; box-shadow: 0 0 14px rgba(180,77,255,0.35) !important; }
+.btn-cockpit { border-color: rgba(255,136,68,0.4) !important; }
+.btn-cockpit:hover { background: rgba(255,136,68,0.3) !important; border-color: var(--cockpit) !important; box-shadow: 0 0 14px rgba(255,136,68,0.35) !important; }
 .btn-active { background: rgba(79, 195, 247, 0.4) !important; border-color: var(--accent) !important; }
 
 .info-panel {
