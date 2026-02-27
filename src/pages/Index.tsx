@@ -418,10 +418,11 @@ const Index = () => {
     cockpitGroup.name = "CockpitModel";
     cockpitGroup.visible = false;
     let cockpitLoaded = false;
-    // Interior light for cockpit view
-    const cockpitLight = new THREE.PointLight(0xffffff, 0, TARGET_SHIP_SIZE * 50);
-    cockpitLight.decay = 1;
-    cockpitGroup.add(cockpitLight);
+    // Interior light for cockpit view - ambient so it illuminates evenly
+    const cockpitLight = new THREE.AmbientLight(0xccccdd, 0);
+    // Also a dim directional from above for depth
+    const cockpitDirLight = new THREE.DirectionalLight(0xffffff, 0);
+    cockpitDirLight.position.set(0, TARGET_SHIP_SIZE * 0.5, -TARGET_SHIP_SIZE * 0.3);
     const gravityAccumulator = new THREE.Vector3();
 
     // ── ENGINE PARTICLE TRAIL ──
@@ -496,6 +497,8 @@ const Index = () => {
     playerShip.position.set(30, 5, 0);
     playerShip.add(cockpitGroup);
     sceneSS.add(playerShip);
+    sceneSS.add(cockpitLight);
+    sceneSS.add(cockpitDirLight);
 
     // ════════════════════════════════════════════════════════════
     //  EVENTS
@@ -826,9 +829,8 @@ const Index = () => {
       const mgr = new THREE.LoadingManager();
       mgr.setURLModifier((url: string) => fileMap[url.split('/').pop()!] || url);
       new GLTFLoader(mgr).load(fileMap[main.name], (gltf: any) => {
-        // Clear old cockpit (keep the light)
-        const toRemoveCockpit = cockpitGroup.children.filter(c => c !== cockpitLight);
-        toRemoveCockpit.forEach(c => cockpitGroup.remove(c));
+        // Clear old cockpit models (keep lights out of group, they're in sceneSS)
+        while (cockpitGroup.children.length > 0) cockpitGroup.remove(cockpitGroup.children[0]);
         const model = gltf.scene;
         const box = new THREE.Box3().setFromObject(model);
         const sz = new THREE.Vector3(); box.getSize(sz);
@@ -841,21 +843,23 @@ const Index = () => {
         const ctr = new THREE.Vector3(); sc.getCenter(ctr);
         model.position.sub(ctr);
         model.rotation.y = Math.PI;
-        // Make all cockpit materials double-sided so interior is visible
+        // Make all cockpit materials double-sided, reduce emissive, and use proper materials
         model.traverse((child: any) => {
           if (child.isMesh && child.material) {
             const mats = Array.isArray(child.material) ? child.material : [child.material];
-            mats.forEach((m: any) => { m.side = THREE.DoubleSide; });
+            mats.forEach((m: any) => {
+              m.side = THREE.DoubleSide;
+              // Prevent bloom from blowing out cockpit
+              if (m.emissive) m.emissive.setScalar(0);
+              if (m.emissiveIntensity !== undefined) m.emissiveIntensity = 0;
+            });
           }
         });
         cockpitGroup.add(model);
         cockpitLoaded = true;
         cockpitGroup.visible = (cameraView === 'cockpit');
-        // Position cockpit light at center
-        cockpitLight.intensity = 2;
-        cockpitLight.position.set(0, TARGET_SHIP_SIZE * 0.2, 0);
         showToast("COCKPIT LOADED — PRESS C IN FLIGHT MODE");
-        console.log('Cockpit loaded, scale:', scale, 'size:', sz, 'TARGET_SHIP_SIZE:', TARGET_SHIP_SIZE);
+        console.log('Cockpit loaded, scale:', scale, 'size:', sz);
       });
     });
 
@@ -1028,13 +1032,22 @@ const Index = () => {
             const mesh2 = playerShip.getObjectByName('TheShipModel');
             if (mesh2) mesh2.visible = false;
             cockpitGroup.visible = cockpitLoaded;
-            // Place camera at ship origin (center of cockpit)
-            const cPos = new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.15, 0).applyMatrix4(playerShip.matrixWorld);
+            // Turn on cockpit lights
+            cockpitLight.intensity = 0.6;
+            cockpitDirLight.intensity = 0.4;
+            // Reduce bloom in cockpit view
+            bloomPass.strength = 0.3;
+            // Place camera at ship origin (center of cockpit), slightly up for pilot eye height
+            const cPos = new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.12, 0).applyMatrix4(playerShip.matrixWorld);
             camera.position.copy(cPos);
             camera.quaternion.copy(playerShip.quaternion);
           } else {
             const mesh2 = playerShip.getObjectByName('TheShipModel');
             if (mesh2) mesh2.visible = true;
+            cockpitGroup.visible = false;
+            cockpitLight.intensity = 0;
+            cockpitDirLight.intensity = 0;
+            bloomPass.strength = 1.4;
             const cOff = new THREE.Vector3(0, TARGET_SHIP_SIZE*0.8, TARGET_SHIP_SIZE*3.5).applyMatrix4(playerShip.matrixWorld);
             camera.position.copy(cOff);
             const lookTgt = new THREE.Vector3(0, TARGET_SHIP_SIZE*0.3, -TARGET_SHIP_SIZE*10).applyMatrix4(playerShip.matrixWorld);
