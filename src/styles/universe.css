@@ -196,6 +196,36 @@
     display: none; pointer-events: none; z-index: 6;
 }
 
+/* Planet Navigator */
+#planet-navigator {
+    position: absolute; bottom: 70px; left: 50%; transform: translateX(-50%);
+    display: none; gap: 4px; align-items: center; pointer-events: auto; z-index: 5;
+    background: var(--glass); border: 1px solid var(--border-universe);
+    padding: 6px 10px; border-radius: 10px; backdrop-filter: blur(12px);
+    box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+}
+#planet-navigator .nav-label {
+    font-family: 'Rajdhani', sans-serif; font-size: 0.65rem; color: #3a6080;
+    letter-spacing: 2px; text-transform: uppercase; margin-right: 6px; white-space: nowrap;
+}
+#planet-navigator button {
+    padding: 5px 10px; font-size: 0.72rem; border-radius: 5px;
+    background: rgba(255,255,255,0.04); border: 1px solid rgba(79,195,247,0.1);
+    transition: all 0.25s; position: relative;
+}
+#planet-navigator button:hover {
+    background: rgba(79,195,247,0.2); border-color: var(--accent);
+    box-shadow: 0 0 12px rgba(79,195,247,0.3);
+}
+#planet-navigator button.nav-active {
+    background: rgba(79,195,247,0.3); border-color: var(--accent);
+    color: #fff; box-shadow: 0 0 10px rgba(79,195,247,0.25);
+}
+#planet-navigator button .planet-dot {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    margin-right: 4px; vertical-align: middle;
+}
+
 @keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
 @keyframes ping { 0% { transform: scale(0.8); opacity: 1; } 100% { transform: scale(2.5); opacity: 0; } }
 @keyframes pulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }

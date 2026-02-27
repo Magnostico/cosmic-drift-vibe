@@ -585,6 +585,59 @@ const Index = () => {
       document.getElementById('target-marker')!.style.display = 'flex';
       document.getElementById('gravity-indicator')!.style.display = 'none';
       document.getElementById('flight-hud')!.style.display = 'none';
+      document.getElementById('planet-navigator')!.style.display = 'none';
+    }
+
+    // ── TRAVEL STATE ──
+    let travelTarget: THREE.Mesh | null = null;
+    let travelProgress = 0;
+    let travelStartPos = new THREE.Vector3();
+    let travelStartTarget = new THREE.Vector3();
+    let isTraveling = false;
+    const TRAVEL_DURATION = 2.0; // seconds
+
+    function travelToPlanet(mesh: THREE.Mesh) {
+      if (flightModeActive || isTraveling) return;
+      initAudio();
+      audio.playTransition();
+
+      travelTarget = mesh;
+      travelProgress = 0;
+      travelStartPos.copy(camera.position);
+      travelStartTarget.copy(controls.target);
+      isTraveling = true;
+
+      // Set as clicked planet too
+      targetPlanet = mesh;
+      targetPlanetData = ssBodies.find((b: any) => b.mesh === mesh);
+      cameraLight.intensity = 1.0;
+
+      const d = mesh.userData;
+      document.getElementById('info-title')!.innerText = d.name;
+      document.getElementById('info-subtitle')!.innerText = d.type || 'Celestial Body';
+      document.getElementById('planet-stats')!.style.display = 'block';
+      document.getElementById('stat-mass')!.innerText = d.mass || '—';
+      document.getElementById('stat-radius')!.innerText = d.radiusStr || '—';
+      document.getElementById('stat-period')!.innerText = d.period || '—';
+      document.getElementById('stat-temp')!.innerText = d.temp || '—';
+      document.getElementById('stat-moons')!.innerText = d.moons || '—';
+      document.getElementById('btn-back-system')!.style.display = 'block';
+      document.getElementById('crosshair')!.style.display = 'block';
+      document.getElementById('dynamic-hud')!.style.display = 'block';
+      document.getElementById('ss-info-card')!.classList.remove('panel-hidden');
+      document.getElementById('btn-toggle-ss-info')!.innerText = '✖ Hide';
+
+      // Update active nav button
+      document.querySelectorAll('#planet-navigator button').forEach(btn => btn.classList.remove('nav-active'));
+      const navBtn = document.getElementById('nav-' + d.name);
+      if (navBtn) navBtn.classList.add('nav-active');
+
+      showToast("TRAVELING TO " + d.name.toUpperCase());
+    }
+
+    // Smooth easing function
+    function easeInOutCubic(t: number): number {
+      return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
     }
 
     function initSolarSystem() {
@@ -595,6 +648,7 @@ const Index = () => {
       document.getElementById('ui-milky-way')!.classList.add('hidden-ui');
       document.getElementById('ui-solar-system')!.classList.remove('hidden-ui');
       document.getElementById('target-marker')!.style.display = 'none';
+      document.getElementById('planet-navigator')!.style.display = 'flex';
     }
 
     initMilkyWay();
@@ -749,6 +803,17 @@ const Index = () => {
       composer.setSize(window.innerWidth, window.innerHeight);
     };
     window.addEventListener('resize', onResize);
+
+    // ── PLANET NAVIGATOR BUTTONS ──
+    const navBodies = [{ name: 'The Sun', mesh: sunMesh }, ...planetsData.map((p, i) => {
+      const body = ssBodies.find((b: any) => b.mesh?.userData?.name === p.name);
+      return { name: p.name, mesh: body?.mesh as THREE.Mesh };
+    })].filter(b => b.mesh);
+
+    navBodies.forEach(b => {
+      const btn = document.getElementById('nav-' + b.name);
+      if (btn) btn.addEventListener('click', () => travelToPlanet(b.mesh));
+    });
 
     // ════════════════════════════════════════════════════════════
     //  ANIMATION LOOP
@@ -922,8 +987,24 @@ const Index = () => {
           controls.update();
         }
 
-        // Focus on clicked planet
-        if (targetPlanet && !flightModeActive) {
+        // Smooth travel animation
+        if (isTraveling && travelTarget) {
+          travelProgress += dt / TRAVEL_DURATION;
+          if (travelProgress >= 1) {
+            travelProgress = 1;
+            isTraveling = false;
+            isTransitioning = false;
+          }
+          const t = easeInOutCubic(Math.min(travelProgress, 1));
+          const wp = new THREE.Vector3(); travelTarget.getWorldPosition(wp);
+          const r = travelTarget.userData.radius || 4;
+          const destPos = new THREE.Vector3(wp.x + r * 3, wp.y + r * 1.5, wp.z + r * 3);
+
+          camera.position.lerpVectors(travelStartPos, destPos, t);
+          controls.target.lerpVectors(travelStartTarget, wp, t);
+        }
+        // Focus on clicked planet (non-travel)
+        else if (targetPlanet && !flightModeActive) {
           const wp = new THREE.Vector3(); targetPlanet.getWorldPosition(wp);
           controls.target.copy(wp);
           if (isTransitioning) {
@@ -1039,6 +1120,20 @@ const Index = () => {
             <div id="hud-orbit">Orbit Angle: —</div>
             <div id="hud-speed">Speed: —</div>
           </div>
+        </div>
+
+        <div id="planet-navigator">
+          <span className="nav-label">🚀 Travel:</span>
+          <button id="nav-The Sun"><span className="planet-dot" style={{ background:'#ffdd44' }} />Sun</button>
+          <button id="nav-Mercury"><span className="planet-dot" style={{ background:'#aaaaaa' }} />Mercury</button>
+          <button id="nav-Venus"><span className="planet-dot" style={{ background:'#ddaa66' }} />Venus</button>
+          <button id="nav-Earth"><span className="planet-dot" style={{ background:'#4488ff' }} />Earth</button>
+          <button id="nav-Mars"><span className="planet-dot" style={{ background:'#cc4422' }} />Mars</button>
+          <button id="nav-Jupiter"><span className="planet-dot" style={{ background:'#cc9955' }} />Jupiter</button>
+          <button id="nav-Saturn"><span className="planet-dot" style={{ background:'#ddbb77' }} />Saturn</button>
+          <button id="nav-Uranus"><span className="planet-dot" style={{ background:'#77ccdd' }} />Uranus</button>
+          <button id="nav-Neptune"><span className="planet-dot" style={{ background:'#3355cc' }} />Neptune</button>
+          <button id="nav-Pluto"><span className="planet-dot" style={{ background:'#cc8888' }} />Pluto</button>
         </div>
 
         <div id="time-controls">
