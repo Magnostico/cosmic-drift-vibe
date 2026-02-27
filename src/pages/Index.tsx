@@ -414,6 +414,10 @@ const Index = () => {
     const keys = { up:false, down:false, left:false, right:false, space:false, q:false, e:false, brake:false };
     let engineGlow: THREE.PointLight | null = null;
     let currentThrust = 0.0002;
+    const cockpitGroup = new THREE.Group();
+    cockpitGroup.name = "CockpitModel";
+    cockpitGroup.visible = false;
+    let cockpitLoaded = false;
     const gravityAccumulator = new THREE.Vector3();
 
     // ── ENGINE PARTICLE TRAIL ──
@@ -486,6 +490,7 @@ const Index = () => {
     }
     buildProceduralShip();
     playerShip.position.set(30, 5, 0);
+    playerShip.add(cockpitGroup);
     sceneSS.add(playerShip);
 
     // ════════════════════════════════════════════════════════════
@@ -505,8 +510,15 @@ const Index = () => {
         const thr: Record<string, [number, string]> = { Digit1:[0.0002,"SCENIC CRUISE"], Digit2:[0.001,"IMPULSE"], Digit3:[0.005,"COMBAT"], Digit4:[0.02,"HYPERDRIVE"] };
         if (thr[e.code]) { currentThrust = thr[e.code][0]; showToast("THRUST: "+thr[e.code][1]); audio.playGearShift(Object.keys(thr).indexOf(e.code)+1); }
         if (e.code==='KeyC') {
-          cameraView = cameraView==='chase' ? 'cockpit' : 'chase';
-          showToast(cameraView==='cockpit' ? "COCKPIT VIEW" : "CHASE CAM");
+          if (cameraView === 'chase') {
+            cameraView = 'cockpit';
+            cockpitGroup.visible = cockpitLoaded;
+            showToast("COCKPIT VIEW");
+          } else {
+            cameraView = 'chase';
+            cockpitGroup.visible = false;
+            showToast("CHASE CAM");
+          }
         }
       }
     };
@@ -711,6 +723,8 @@ const Index = () => {
         document.getElementById('btn-flight-mode')!.innerText = '🚀 Pilot Ship';
         document.getElementById('btn-flight-mode')!.className = 'btn-success';
         isTransitioning = true;
+        cameraView = 'chase';
+        cockpitGroup.visible = false;
         const mesh = playerShip.getObjectByName('TheShipModel');
         if (mesh) mesh.visible = true;
       }
@@ -778,7 +792,9 @@ const Index = () => {
       const mgr = new THREE.LoadingManager();
       mgr.setURLModifier((url: string) => fileMap[url.split('/').pop()!] || url);
       new GLTFLoader(mgr).load(fileMap[main.name], (gltf: any) => {
-        while (playerShip.children.length > 0) playerShip.remove(playerShip.children[0]);
+        // Remove old ship model and engine glow, but keep cockpitGroup
+        const toRemove = playerShip.children.filter(c => c !== cockpitGroup);
+        toRemove.forEach(c => playerShip.remove(c));
         const model = gltf.scene;
         const box = new THREE.Box3().setFromObject(model);
         const sz = new THREE.Vector3(); box.getSize(sz);
@@ -792,7 +808,39 @@ const Index = () => {
         engineGlow = new THREE.PointLight(0x44aaff, 0, TARGET_SHIP_SIZE*600);
         engineGlow.position.set(0, 0, TARGET_SHIP_SIZE*0.8);
         playerShip.add(engineGlow);
-        showToast("MODEL LOADED — Q/E TO CALIBRATE ORIENTATION");
+        showToast("SHIP MODEL LOADED — Q/E TO CALIBRATE");
+      });
+    });
+
+    // ── COCKPIT MODEL UPLOAD ──
+    document.getElementById('btn-upload-cockpit')!.addEventListener('click', () => document.getElementById('cockpit-file-input')!.click());
+    document.getElementById('cockpit-file-input')!.addEventListener('change', (event: any) => {
+      const files = Array.from(event.target.files) as File[];
+      const main = files.find(f => f.name.endsWith('.gltf')||f.name.endsWith('.glb'));
+      if (!main) return;
+      const fileMap: Record<string, string> = {}; files.forEach(f => fileMap[f.name] = URL.createObjectURL(f));
+      const mgr = new THREE.LoadingManager();
+      mgr.setURLModifier((url: string) => fileMap[url.split('/').pop()!] || url);
+      new GLTFLoader(mgr).load(fileMap[main.name], (gltf: any) => {
+        // Clear old cockpit
+        while (cockpitGroup.children.length > 0) cockpitGroup.remove(cockpitGroup.children[0]);
+        const model = gltf.scene;
+        const box = new THREE.Box3().setFromObject(model);
+        const sz = new THREE.Vector3(); box.getSize(sz);
+        // Scale cockpit to same size as ship
+        const scale = TARGET_SHIP_SIZE / Math.max(sz.x, sz.y, sz.z);
+        model.scale.setScalar(scale);
+        const sc = new THREE.Box3().setFromObject(model);
+        const ctr = new THREE.Vector3(); sc.getCenter(ctr);
+        model.position.sub(ctr);
+        // Position cockpit so camera sits inside - shift it forward/down so pilot seat surrounds camera
+        model.position.y -= TARGET_SHIP_SIZE * 0.05;
+        model.position.z += TARGET_SHIP_SIZE * 0.2;
+        model.rotation.y = Math.PI;
+        cockpitGroup.add(model);
+        cockpitLoaded = true;
+        cockpitGroup.visible = (cameraView === 'cockpit');
+        showToast("COCKPIT MODEL LOADED — PRESS C IN FLIGHT MODE");
       });
     });
 
@@ -961,10 +1009,11 @@ const Index = () => {
           const altFromSun = playerShip.position.length().toFixed(1);
           document.getElementById('fhud-alt')!.innerText = altFromSun + ' AU';
 
-          if (cameraView === 'cockpit') {
+        if (cameraView === 'cockpit') {
             const mesh2 = playerShip.getObjectByName('TheShipModel');
             if (mesh2) mesh2.visible = false;
-            const cPos = new THREE.Vector3(0, TARGET_SHIP_SIZE*0.1, -TARGET_SHIP_SIZE*0.5).applyMatrix4(playerShip.matrixWorld);
+            cockpitGroup.visible = cockpitLoaded;
+            const cPos = new THREE.Vector3(0, TARGET_SHIP_SIZE*0.1, -TARGET_SHIP_SIZE*0.3).applyMatrix4(playerShip.matrixWorld);
             camera.position.copy(cPos);
             camera.quaternion.copy(playerShip.quaternion);
           } else {
@@ -1088,8 +1137,10 @@ const Index = () => {
           <button id="btn-back-galaxy" className="btn-danger">🌌 Galaxy</button>
           <button id="btn-back-system" className="btn-danger" style={{ display:'none' }}>☀ Free View</button>
           <button id="btn-flight-mode" className="btn-success">🚀 Pilot Ship</button>
-          <button id="btn-upload-model" className="btn-purple">📂 Load Model</button>
+          <button id="btn-upload-model" className="btn-purple">📂 Load Ship</button>
           <input type="file" id="file-input" accept=".glb,.gltf,.bin" multiple style={{ display:'none' }} />
+          <button id="btn-upload-cockpit" className="btn-cockpit">🎯 Load Cockpit</button>
+          <input type="file" id="cockpit-file-input" accept=".glb,.gltf,.bin" multiple style={{ display:'none' }} />
           <button id="btn-toggle-orbits">◯ Orbits</button>
           <button id="btn-orrery">⊙ Orrery</button>
           <button id="btn-gravity">⚛ Gravity</button>
