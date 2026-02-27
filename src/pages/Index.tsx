@@ -418,6 +418,10 @@ const Index = () => {
     cockpitGroup.name = "CockpitModel";
     cockpitGroup.visible = false;
     let cockpitLoaded = false;
+    // Interior light for cockpit view
+    const cockpitLight = new THREE.PointLight(0xffffff, 0, TARGET_SHIP_SIZE * 50);
+    cockpitLight.decay = 1;
+    cockpitGroup.add(cockpitLight);
     const gravityAccumulator = new THREE.Vector3();
 
     // ── ENGINE PARTICLE TRAIL ──
@@ -822,25 +826,36 @@ const Index = () => {
       const mgr = new THREE.LoadingManager();
       mgr.setURLModifier((url: string) => fileMap[url.split('/').pop()!] || url);
       new GLTFLoader(mgr).load(fileMap[main.name], (gltf: any) => {
-        // Clear old cockpit
-        while (cockpitGroup.children.length > 0) cockpitGroup.remove(cockpitGroup.children[0]);
+        // Clear old cockpit (keep the light)
+        const toRemoveCockpit = cockpitGroup.children.filter(c => c !== cockpitLight);
+        toRemoveCockpit.forEach(c => cockpitGroup.remove(c));
         const model = gltf.scene;
         const box = new THREE.Box3().setFromObject(model);
         const sz = new THREE.Vector3(); box.getSize(sz);
-        // Scale cockpit to same size as ship
-        const scale = TARGET_SHIP_SIZE / Math.max(sz.x, sz.y, sz.z);
+        const maxDim = Math.max(sz.x, sz.y, sz.z);
+        // Scale cockpit to same reference size as the ship
+        const scale = TARGET_SHIP_SIZE / maxDim;
         model.scale.setScalar(scale);
+        // Re-center after scaling
         const sc = new THREE.Box3().setFromObject(model);
         const ctr = new THREE.Vector3(); sc.getCenter(ctr);
         model.position.sub(ctr);
-        // Position cockpit so camera sits inside - shift it forward/down so pilot seat surrounds camera
-        model.position.y -= TARGET_SHIP_SIZE * 0.05;
-        model.position.z += TARGET_SHIP_SIZE * 0.2;
         model.rotation.y = Math.PI;
+        // Make all cockpit materials double-sided so interior is visible
+        model.traverse((child: any) => {
+          if (child.isMesh && child.material) {
+            const mats = Array.isArray(child.material) ? child.material : [child.material];
+            mats.forEach((m: any) => { m.side = THREE.DoubleSide; });
+          }
+        });
         cockpitGroup.add(model);
         cockpitLoaded = true;
         cockpitGroup.visible = (cameraView === 'cockpit');
-        showToast("COCKPIT MODEL LOADED — PRESS C IN FLIGHT MODE");
+        // Position cockpit light at center
+        cockpitLight.intensity = 2;
+        cockpitLight.position.set(0, TARGET_SHIP_SIZE * 0.2, 0);
+        showToast("COCKPIT LOADED — PRESS C IN FLIGHT MODE");
+        console.log('Cockpit loaded, scale:', scale, 'size:', sz, 'TARGET_SHIP_SIZE:', TARGET_SHIP_SIZE);
       });
     });
 
@@ -1009,11 +1024,12 @@ const Index = () => {
           const altFromSun = playerShip.position.length().toFixed(1);
           document.getElementById('fhud-alt')!.innerText = altFromSun + ' AU';
 
-        if (cameraView === 'cockpit') {
+          if (cameraView === 'cockpit') {
             const mesh2 = playerShip.getObjectByName('TheShipModel');
             if (mesh2) mesh2.visible = false;
             cockpitGroup.visible = cockpitLoaded;
-            const cPos = new THREE.Vector3(0, TARGET_SHIP_SIZE*0.1, -TARGET_SHIP_SIZE*0.3).applyMatrix4(playerShip.matrixWorld);
+            // Place camera at ship origin (center of cockpit)
+            const cPos = new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.15, 0).applyMatrix4(playerShip.matrixWorld);
             camera.position.copy(cPos);
             camera.quaternion.copy(playerShip.quaternion);
           } else {
