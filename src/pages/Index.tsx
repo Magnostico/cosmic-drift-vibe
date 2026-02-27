@@ -102,6 +102,7 @@ const Index = () => {
     sceneSS.add(new THREE.AmbientLight(0x222233, 1.2));
 
     const sunLight = new THREE.PointLight(0xfffbe8, 3.0, 500);
+    sunLight.decay = 1;
     sunLight.castShadow = true;
     sunLight.shadow.mapSize.width = 2048;
     sunLight.shadow.mapSize.height = 2048;
@@ -534,12 +535,13 @@ const Index = () => {
       mouse.x = (e.clientX/window.innerWidth)*2-1;
       mouse.y = -(e.clientY/window.innerHeight)*2+1;
       raycaster.setFromCamera(mouse, camera);
-      const hits = raycaster.intersectObjects(interactables);
-      if (hits.length > 0) {
+      const hits = raycaster.intersectObjects(interactables, false);
+      const hit = hits.find(h => interactables.includes(h.object as THREE.Mesh));
+      if (hit) {
         initAudio();
         audio.playPlanetClick();
-        targetPlanet = hits[0].object as THREE.Mesh;
-        console.log('CLICKED:', targetPlanet.userData, 'obj:', targetPlanet);
+        targetPlanet = hit.object as THREE.Mesh;
+        
         targetPlanetData = ssBodies.find((b: any) => b.mesh===targetPlanet);
         isTransitioning = true;
         cameraLight.intensity = 1.0;
