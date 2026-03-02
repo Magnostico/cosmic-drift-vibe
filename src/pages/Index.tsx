@@ -1038,7 +1038,10 @@ const Index = () => {
             // Camera at pilot seat: slightly up, slightly back (+Z since ship faces -Z)
             const cPos = new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.15, TARGET_SHIP_SIZE * 0.25).applyMatrix4(playerShip.matrixWorld);
             camera.position.copy(cPos);
+            // Copy ship orientation then rotate -90° on Y to face forward
             camera.quaternion.copy(playerShip.quaternion);
+            const cockpitRotFix = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -Math.PI / 2);
+            camera.quaternion.multiply(cockpitRotFix);
           } else {
             const mesh2 = playerShip.getObjectByName('TheShipModel');
             if (mesh2) mesh2.visible = true;
