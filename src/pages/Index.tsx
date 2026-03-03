@@ -979,7 +979,10 @@ const Index = () => {
             audio.updateThrust(0);
           }
 
-          if (engineGlow) engineGlow.intensity += (targetGlow - engineGlow.intensity) * 10 * dt;
+          if (engineGlow) {
+            engineGlow.intensity += (targetGlow - engineGlow.intensity) * 10 * dt;
+            engineGlow.visible = cameraView !== 'cockpit';
+          }
 
           // Newtonian gravity
           if (gravityEnabled) {
