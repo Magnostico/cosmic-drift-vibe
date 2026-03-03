@@ -1040,8 +1040,8 @@ const Index = () => {
             cockpitLight.intensity = 0.6;
             cockpitDirLight.intensity = 0.4;
             bloomPass.strength = 0.3;
-            // Camera at pilot seat: slightly up, slightly back (+Z since ship faces -Z)
-            const cPos = new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.15, TARGET_SHIP_SIZE * 0.25).applyMatrix4(playerShip.matrixWorld);
+            // Camera at pilot seat: centered inside ship
+            const cPos = new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.05, 0).applyMatrix4(playerShip.matrixWorld);
             camera.position.copy(cPos);
             // Copy ship orientation then apply user-adjustable cockpit angle
             camera.quaternion.copy(playerShip.quaternion);
