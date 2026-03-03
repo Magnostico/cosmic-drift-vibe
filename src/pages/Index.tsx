@@ -1264,7 +1264,7 @@ const Index = () => {
         {/* COCKPIT ANGLE CONTROLS */}
         <div id="cockpit-controls" style={{
           display: 'none', position: 'fixed', bottom: '140px', left: '50%', transform: 'translateX(-50%)',
-          gap: '8px', alignItems: 'center', zIndex: 40,
+          gap: '8px', alignItems: 'center', zIndex: 40, pointerEvents: 'auto',
           background: 'rgba(0,0,0,0.7)', border: '1px solid rgba(255,165,0,0.4)', borderRadius: '8px', padding: '8px 16px'
         }}>
           <button onClick={() => (window as any).__cockpitRotLeft?.()} style={{
