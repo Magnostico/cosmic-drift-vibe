@@ -32,7 +32,7 @@ const Index = () => {
     let orreryMode = false;
     let isTransitioning = false;
     let cameraView = 'chase';
-    let cockpitYAngle = 0; // radians, user-adjustable cockpit camera Y rotation
+    let cockpitYAngle = -Math.PI / 2; // locked at -90°
     let toastTimeout: ReturnType<typeof setTimeout>;
     const audio = new SpaceAudioEngine();
     let audioInitialized = false;
@@ -419,10 +419,6 @@ const Index = () => {
     cockpitGroup.name = "CockpitModel";
     cockpitGroup.visible = false;
     let cockpitLoaded = false;
-    // Expose cockpit angle adjustment to UI buttons
-    (window as any).__cockpitRotLeft = () => { cockpitYAngle += Math.PI / 8; const deg = Math.round((cockpitYAngle * 180 / Math.PI) % 360); const el = document.getElementById('cockpit-angle-val'); if (el) el.innerText = deg + '°'; };
-    (window as any).__cockpitRotRight = () => { cockpitYAngle -= Math.PI / 8; const deg = Math.round((cockpitYAngle * 180 / Math.PI) % 360); const el = document.getElementById('cockpit-angle-val'); if (el) el.innerText = deg + '°'; };
-    (window as any).__cockpitRotReset = () => { cockpitYAngle = 0; const el = document.getElementById('cockpit-angle-val'); if (el) el.innerText = '0°'; };
     // Interior light for cockpit view - ambient so it illuminates evenly
     const cockpitLight = new THREE.AmbientLight(0xccccdd, 0);
     // Also a dim directional from above for depth
@@ -1047,9 +1043,6 @@ const Index = () => {
             camera.quaternion.copy(playerShip.quaternion);
             const cockpitRotFix = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), cockpitYAngle);
             camera.quaternion.multiply(cockpitRotFix);
-            // Show cockpit angle controls
-            const cCtrl = document.getElementById('cockpit-controls');
-            if (cCtrl) cCtrl.style.display = 'flex';
           } else {
             const mesh2 = playerShip.getObjectByName('TheShipModel');
             if (mesh2) mesh2.visible = true;
@@ -1057,8 +1050,6 @@ const Index = () => {
             cockpitLight.intensity = 0;
             cockpitDirLight.intensity = 0;
             bloomPass.strength = 1.4;
-            const cCtrl = document.getElementById('cockpit-controls');
-            if (cCtrl) cCtrl.style.display = 'none';
             const cOff = new THREE.Vector3(0, TARGET_SHIP_SIZE*0.8, TARGET_SHIP_SIZE*3.5).applyMatrix4(playerShip.matrixWorld);
             camera.position.copy(cOff);
             const lookTgt = new THREE.Vector3(0, TARGET_SHIP_SIZE*0.3, -TARGET_SHIP_SIZE*10).applyMatrix4(playerShip.matrixWorld);
@@ -1261,26 +1252,6 @@ const Index = () => {
           </div>
         </div>
 
-        {/* COCKPIT ANGLE CONTROLS */}
-        <div id="cockpit-controls" style={{
-          display: 'none', position: 'fixed', bottom: '140px', left: '50%', transform: 'translateX(-50%)',
-          gap: '8px', alignItems: 'center', zIndex: 40, pointerEvents: 'auto',
-          background: 'rgba(0,0,0,0.7)', border: '1px solid rgba(255,165,0,0.4)', borderRadius: '8px', padding: '8px 16px'
-        }}>
-          <button onClick={() => (window as any).__cockpitRotLeft?.()} style={{
-            background: 'rgba(255,165,0,0.2)', border: '1px solid rgba(255,165,0,0.5)', color: '#ffa500',
-            borderRadius: '4px', padding: '6px 12px', cursor: 'pointer', fontFamily: 'monospace', fontSize: '14px'
-          }}>◀ Rot Left</button>
-          <span id="cockpit-angle-val" style={{ color: '#ffa500', fontFamily: 'monospace', fontSize: '14px', minWidth: '40px', textAlign: 'center' }}>0°</span>
-          <button onClick={() => (window as any).__cockpitRotRight?.()} style={{
-            background: 'rgba(255,165,0,0.2)', border: '1px solid rgba(255,165,0,0.5)', color: '#ffa500',
-            borderRadius: '4px', padding: '6px 12px', cursor: 'pointer', fontFamily: 'monospace', fontSize: '14px'
-          }}>Rot Right ▶</button>
-          <button onClick={() => (window as any).__cockpitRotReset?.()} style={{
-            background: 'rgba(255,50,50,0.2)', border: '1px solid rgba(255,50,50,0.5)', color: '#ff5555',
-            borderRadius: '4px', padding: '6px 12px', cursor: 'pointer', fontFamily: 'monospace', fontSize: '12px'
-          }}>Reset</button>
-        </div>
       </div>
 
       {/* TARGET MARKER */}
