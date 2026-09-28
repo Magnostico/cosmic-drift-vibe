@@ -242,6 +242,56 @@ export class SpaceAudioEngine {
     osc.stop(ctx.currentTime + 0.35);
   }
 
+  /** Cinematic heavy explosion sound synthesis */
+  playExplosion() {
+    if (!this.ctx || !this.masterGain) return;
+    const ctx = this.ctx;
+    const t0 = ctx.currentTime;
+
+    // 1. Initial supersonic crack / transient (sharp burst)
+    const crackOsc = ctx.createOscillator();
+    crackOsc.type = 'sawtooth';
+    crackOsc.frequency.setValueAtTime(450, t0);
+    crackOsc.frequency.exponentialRampToValueAtTime(30, t0 + 0.12);
+    const crackGain = ctx.createGain();
+    crackGain.gain.setValueAtTime(0.4, t0);
+    crackGain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.15);
+    crackOsc.connect(crackGain);
+    crackGain.connect(this.masterGain);
+    crackOsc.start(t0);
+    crackOsc.stop(t0 + 0.16);
+
+    // 2. Deep sub-bass boom (hull disintegration shockwave)
+    const subOsc = ctx.createOscillator();
+    subOsc.type = 'sine';
+    subOsc.frequency.setValueAtTime(120, t0);
+    subOsc.frequency.exponentialRampToValueAtTime(25, t0 + 1.2);
+    const subGain = ctx.createGain();
+    subGain.gain.setValueAtTime(0.6, t0);
+    subGain.gain.exponentialRampToValueAtTime(0.001, t0 + 1.4);
+    subOsc.connect(subGain);
+    subGain.connect(this.masterGain);
+    subOsc.start(t0);
+    subOsc.stop(t0 + 1.45);
+
+    // 3. Fiery roar & thermal debris noise (decaying rumble)
+    const noiseBuf = this.createNoiseBuffer(2.5);
+    const noiseSrc = ctx.createBufferSource();
+    noiseSrc.buffer = noiseBuf;
+    const noiseFilter = ctx.createBiquadFilter();
+    noiseFilter.type = 'lowpass';
+    noiseFilter.frequency.setValueAtTime(800, t0);
+    noiseFilter.frequency.exponentialRampToValueAtTime(60, t0 + 2.0);
+    const noiseGain = ctx.createGain();
+    noiseGain.gain.setValueAtTime(0.5, t0);
+    noiseGain.gain.exponentialRampToValueAtTime(0.001, t0 + 2.2);
+    noiseSrc.connect(noiseFilter);
+    noiseFilter.connect(noiseGain);
+    noiseGain.connect(this.masterGain);
+    noiseSrc.start(t0);
+    noiseSrc.stop(t0 + 2.3);
+  }
+
   dispose() {
     this.disposed = true;
     try {

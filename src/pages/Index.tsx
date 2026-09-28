@@ -415,6 +415,462 @@ const Index = () => {
     let currentThrust = 0.0002;
     const gravityAccumulator = new THREE.Vector3();
 
+    // ── HIGH-FIDELITY 3D CINEMATIC EXPLOSION SYSTEM (Inspired by Stylized 3D Fireball Mesh & PBR Shaders) ──
+    let isExploded = false;
+    let explosionTimer = 0;
+    let cameraShakeIntensity = 0;
+    const EXPLOSION_RESPAWN_DELAY = 2.8;
+
+    // 1. Dynamic Omnidirectional Flash Light
+    const explosionLight = new THREE.PointLight(0xff7711, 0, 200, 0.8);
+    sceneSS.add(explosionLight);
+
+    // 2. Volumetric 3D Fireball Core (Deforming Organic Plumes Mesh)
+    const fireballGeo = new THREE.IcosahedronGeometry(0.3, 4);
+    // Custom displacement shader for billowing fiery clouds with hot white/yellow core, deep orange edges and smoke dissipation
+    const fireballMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0.0 },
+        uProgress: { value: 0.0 }, // 0 = start of explosion, 1 = dissipated
+        uColorCore: { value: new THREE.Color(0xffffff) },
+        uColorFire: { value: new THREE.Color(0xff8800) },
+        uColorDark: { value: new THREE.Color(0x220500) }
+      },
+      vertexShader: `
+        uniform float uTime;
+        uniform float uProgress;
+        varying vec3 vNormal;
+        varying vec3 vPosition;
+        varying float vNoise;
+
+        // Simplex / Perlin noise generator
+        vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+        vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+        vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
+        vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+
+        float snoise(vec3 v) {
+          const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+          const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+          vec3 i  = floor(v + dot(v, C.yyy));
+          vec3 x0 = v - i + dot(i, C.xxx);
+          vec3 g = step(x0.yzx, x0.xyz);
+          vec3 l = 1.0 - g;
+          vec3 i1 = min(g.xyz, l.zxy);
+          vec3 i2 = max(g.xyz, l.zxy);
+          vec3 x1 = x0 - i1 + C.xxx;
+          vec3 x2 = x0 - i2 + C.yyy;
+          vec3 x3 = x0 - D.yyy;
+          i = mod289(i);
+          vec4 p = permute(permute(permute(
+                    i.z + vec4(0.0, i1.z, i2.z, 1.0))
+                  + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+                  + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+          float n_ = 0.142857142857;
+          vec3  ns = n_ * D.wyz - D.xzx;
+          vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+          vec4 x_ = floor(j * ns.z);
+          vec4 y_ = floor(j - 7.0 * x_);
+          vec4 x = x_ *ns.x + ns.yyyy;
+          vec4 y = y_ *ns.x + ns.yyyy;
+          vec4 h = 1.0 - abs(x) - abs(y);
+          vec4 b0 = vec4(x.xy, y.xy);
+          vec4 b1 = vec4(x.zw, y.zw);
+          vec4 s0 = floor(b0)*2.0 + 1.0;
+          vec4 s1 = floor(b1)*2.0 + 1.0;
+          vec4 sh = -step(h, vec4(0.0));
+          vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy;
+          vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww;
+          vec3 p0 = vec3(a0.xy, h.x);
+          vec3 p1 = vec3(a0.zw, h.y);
+          vec3 p2 = vec3(a1.xy, h.z);
+          vec3 p3 = vec3(a1.zw, h.w);
+          vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2, p2), dot(p3,p3)));
+          p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+          vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+          m = m * m;
+          return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+        }
+
+        void main() {
+          vNormal = normalize(normalMatrix * normal);
+          vPosition = position;
+          // Deform mesh outward into turbulent stylized plumes
+          float n = snoise(position * 3.5 + vec3(0.0, 0.0, uTime * 2.0));
+          float n2 = snoise(position * 7.0 - vec3(uTime * 1.5));
+          vNoise = n * 0.7 + n2 * 0.3;
+
+          // Expansion scale curve: rapid blast then slow billow
+          float expand = pow(uProgress, 0.35) * 4.8;
+          vec3 displaced = position * (1.0 + expand) + normal * (vNoise * (0.6 + expand * 0.4));
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(displaced, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uProgress;
+        uniform vec3 uColorCore;
+        uniform vec3 uColorFire;
+        uniform vec3 uColorDark;
+        varying vec3 vNormal;
+        varying vec3 vPosition;
+        varying float vNoise;
+
+        void main() {
+          // Heat gradient from core to plume tips
+          float heat = clamp(vNoise + (1.0 - uProgress * 1.2), 0.0, 1.0);
+          vec3 col = mix(uColorDark, uColorFire, smoothstep(0.1, 0.6, heat));
+          col = mix(col, uColorCore, smoothstep(0.65, 0.95, heat));
+
+          float alpha = clamp((1.0 - uProgress) * (1.0 - uProgress), 0.0, 1.0);
+          if (alpha <= 0.01) discard;
+          gl_FragColor = vec4(col * (1.2 + (1.0 - uProgress) * 2.0), alpha * 0.95);
+        }
+      `,
+      transparent: true,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    });
+    const fireballMesh = new THREE.Mesh(fireballGeo, fireballMat);
+    fireballMesh.visible = false;
+    sceneSS.add(fireballMesh);
+
+    // 3. Dense Fiery & Plasma Particle Burst System (500 High-Speed Micro Embers)
+    const EXP_PARTICLE_COUNT = 450;
+    const expParticles: {
+      pos: THREE.Vector3;
+      vel: THREE.Vector3;
+      life: number;
+      maxLife: number;
+      size: number;
+      color: THREE.Color;
+      rotSpeed: number;
+    }[] = [];
+    const expGeo = new THREE.BufferGeometry();
+    const expPos = new Float32Array(EXP_PARTICLE_COUNT * 3);
+    const expCol = new Float32Array(EXP_PARTICLE_COUNT * 3);
+    const expSizes = new Float32Array(EXP_PARTICLE_COUNT);
+    expGeo.setAttribute('position', new THREE.BufferAttribute(expPos, 3));
+    expGeo.setAttribute('color', new THREE.BufferAttribute(expCol, 3));
+    expGeo.setAttribute('size', new THREE.BufferAttribute(expSizes, 1));
+
+    const fireTex = (() => {
+      const c = document.createElement('canvas'); c.width = 128; c.height = 128;
+      const ctx = c.getContext('2d')!;
+      const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+      g.addColorStop(0, 'rgba(255, 255, 255, 1)');
+      g.addColorStop(0.18, 'rgba(255, 220, 80, 0.95)');
+      g.addColorStop(0.45, 'rgba(255, 90, 15, 0.7)');
+      g.addColorStop(0.75, 'rgba(180, 20, 0, 0.3)');
+      g.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, 128, 128);
+      return new THREE.CanvasTexture(c);
+    })();
+
+    const expMat = new THREE.PointsMaterial({
+      size: 0.15, vertexColors: true, map: fireTex,
+      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+      sizeAttenuation: true
+    });
+    const expPoints = new THREE.Points(expGeo, expMat);
+    expPoints.visible = false;
+    sceneSS.add(expPoints);
+
+    // 4. Shrapnel & Debris Fragments (55 Glowing Hull Shards with Fiery Edge Trails)
+    const DEBRIS_COUNT = 55;
+    const debrisGroup = new THREE.Group();
+    debrisGroup.visible = false;
+    sceneSS.add(debrisGroup);
+
+    const debrisPieces: {
+      mesh: THREE.Mesh;
+      vel: THREE.Vector3;
+      rotVel: THREE.Vector3;
+      life: number;
+    }[] = [];
+    const shardGeo = new THREE.TetrahedronGeometry(0.15, 0);
+    const shardMat = new THREE.MeshStandardMaterial({
+      color: 0x18181f,
+      emissive: 0xff3300,
+      emissiveIntensity: 1.5,
+      roughness: 0.3,
+      metalness: 0.95
+    });
+
+    for (let i = 0; i < DEBRIS_COUNT; i++) {
+      const shardMesh = new THREE.Mesh(shardGeo, shardMat.clone());
+      const s = 0.3 + Math.random() * 0.9;
+      shardMesh.scale.set(s, s * (0.4 + Math.random() * 1.2), s);
+      debrisGroup.add(shardMesh);
+      debrisPieces.push({
+        mesh: shardMesh,
+        vel: new THREE.Vector3(),
+        rotVel: new THREE.Vector3(),
+        life: 0
+      });
+    }
+
+    // 5. Dual Spherical Shockwaves (Inner High-Energy Blast + Outer Dissipating Corona)
+    const shockwaveGeo = new THREE.RingGeometry(0.1, 0.8, 64);
+    const shockwaveMat = new THREE.MeshBasicMaterial({
+      color: 0xffbb55,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+    const shockwaveMesh = new THREE.Mesh(shockwaveGeo, shockwaveMat);
+    shockwaveMesh.visible = false;
+    sceneSS.add(shockwaveMesh);
+
+    const shockwaveSphereGeo = new THREE.SphereGeometry(0.5, 32, 32);
+    const shockwaveSphereMat = new THREE.ShaderMaterial({
+      uniforms: {
+        c: { value: 0.5 },
+        p: { value: 3.5 },
+        glowColor: { value: new THREE.Color(0xff8822) },
+        opacityVal: { value: 0.0 }
+      },
+      vertexShader: `
+        varying float intensity;
+        void main() {
+          vec3 vNormal = normalize(normalMatrix * normal);
+          vec3 vNormel = normalize(vec3(modelViewMatrix * vec4(position, 1.0)));
+          intensity = pow(0.7 - dot(vNormal, vNormel), 3.0);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }`,
+      fragmentShader: `
+        uniform vec3 glowColor;
+        uniform float opacityVal;
+        varying float intensity;
+        void main() {
+          gl_FragColor = vec4(glowColor * intensity * 2.0, intensity * opacityVal);
+        }`,
+      side: THREE.BackSide,
+      blending: THREE.AdditiveBlending,
+      transparent: true,
+      depthWrite: false
+    });
+    const shockwaveSphere = new THREE.Mesh(shockwaveSphereGeo, shockwaveSphereMat);
+    shockwaveSphere.visible = false;
+    sceneSS.add(shockwaveSphere);
+
+    let shockwaveScale = 0;
+    let shockwaveOpacity = 0;
+
+    function triggerExplosion(impactPoint: THREE.Vector3, impactObjName = 'Space Object') {
+      if (isExploded) return;
+      isExploded = true;
+      explosionTimer = EXPLOSION_RESPAWN_DELAY;
+      cameraShakeIntensity = 1.35;
+
+      // Audio burst with multi-stage synthesis
+      initAudio();
+      audio.playExplosion();
+
+      // UI HUD feedback
+      showToast(`💥 CRITICAL IMPACT: DESTROYED BY ${impactObjName.toUpperCase()}`);
+
+      // Hide ship visuals & halt physics
+      playerShip.visible = false;
+      shipVelocity.set(0, 0, 0);
+      shipAngularVelocity.set(0, 0, 0);
+
+      // 1. Dynamic Flash Light
+      explosionLight.position.copy(impactPoint);
+      explosionLight.intensity = 26.0;
+
+      // 2. 3D Volumetric Fireball Mesh (Billowing Stylized Plumes)
+      fireballMesh.position.copy(impactPoint);
+      fireballMesh.scale.set(1, 1, 1);
+      fireballMat.uniforms.uProgress.value = 0.0;
+      fireballMat.uniforms.uTime.value = 0.0;
+      fireballMesh.visible = true;
+
+      // 3. Shockwave Ring & Expansion Sphere
+      shockwaveMesh.position.copy(impactPoint);
+      shockwaveMesh.quaternion.copy(playerShip.quaternion);
+      shockwaveScale = 0.3;
+      shockwaveOpacity = 1.0;
+      shockwaveMesh.visible = true;
+
+      shockwaveSphere.position.copy(impactPoint);
+      shockwaveSphere.scale.set(0.2, 0.2, 0.2);
+      shockwaveSphereMat.uniforms.opacityVal.value = 1.0;
+      shockwaveSphere.visible = true;
+
+      // 4. Dense High-Velocity Ember Particles Burst
+      expParticles.length = 0;
+      for (let i = 0; i < EXP_PARTICLE_COUNT; i++) {
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.acos((Math.random() * 2) - 1);
+        const speed = 0.12 + Math.random() * 0.55;
+        const vel = new THREE.Vector3(
+          Math.sin(phi) * Math.cos(theta),
+          Math.sin(phi) * Math.sin(theta),
+          Math.cos(phi)
+        ).multiplyScalar(speed);
+
+        const colors = [
+          new THREE.Color(0xffffff),
+          new THREE.Color(0xffeedd),
+          new THREE.Color(0xffcc44),
+          new THREE.Color(0xff7711),
+          new THREE.Color(0xee2200),
+          new THREE.Color(0x990500)
+        ];
+        const color = colors[Math.floor(Math.random() * colors.length)];
+
+        expParticles.push({
+          pos: impactPoint.clone().add(new THREE.Vector3((Math.random()-0.5)*0.25, (Math.random()-0.5)*0.25, (Math.random()-0.5)*0.25)),
+          vel,
+          life: 1.0,
+          maxLife: 0.9 + Math.random() * 1.5,
+          size: 1.0 + Math.random() * 2.4,
+          color,
+          rotSpeed: (Math.random() - 0.5) * 6
+        });
+      }
+      expPoints.visible = true;
+
+      // 5. Shrapnel Debris Shards (55 Spinning Hull Parts)
+      debrisGroup.visible = true;
+      debrisPieces.forEach(dp => {
+        dp.mesh.position.copy(impactPoint);
+        dp.mesh.visible = true;
+        const speed = 0.12 + Math.random() * 0.45;
+        dp.vel.set(
+          (Math.random() - 0.5) * 2,
+          (Math.random() - 0.5) * 2,
+          (Math.random() - 0.5) * 2
+        ).normalize().multiplyScalar(speed);
+        dp.rotVel.set(
+          (Math.random() - 0.5) * 20,
+          (Math.random() - 0.5) * 20,
+          (Math.random() - 0.5) * 20
+        );
+        dp.life = 1.0;
+        (dp.mesh.material as THREE.MeshStandardMaterial).emissiveIntensity = 2.0;
+      });
+    }
+
+    function updateExplosion(dt: number) {
+      if (!isExploded && cameraShakeIntensity <= 0) return;
+
+      if (isExploded) {
+        explosionTimer -= dt;
+        const elapsed = EXPLOSION_RESPAWN_DELAY - explosionTimer;
+        const normProgress = Math.min(1.0, elapsed / 2.0);
+
+        // Flash Light Decay
+        explosionLight.intensity = Math.max(0, explosionLight.intensity - dt * 11.0);
+
+        // 1. Update Volumetric 3D Fireball Mesh
+        if (fireballMesh.visible) {
+          fireballMat.uniforms.uTime.value += dt;
+          fireballMat.uniforms.uProgress.value = normProgress;
+          fireballMesh.rotation.y += dt * 0.8;
+          fireballMesh.rotation.z += dt * 0.5;
+          if (normProgress >= 0.99) fireballMesh.visible = false;
+        }
+
+        // 2. Expand Shockwave Ring & Corona Sphere
+        if (shockwaveMesh.visible) {
+          shockwaveScale += dt * 18.0;
+          shockwaveOpacity = Math.max(0, shockwaveOpacity - dt * 1.6);
+          shockwaveMesh.scale.set(shockwaveScale, shockwaveScale, shockwaveScale);
+          shockwaveMat.opacity = shockwaveOpacity;
+          if (shockwaveOpacity <= 0) shockwaveMesh.visible = false;
+        }
+
+        if (shockwaveSphere.visible) {
+          const sphScale = shockwaveSphere.scale.x + dt * 14.0;
+          shockwaveSphere.scale.set(sphScale, sphScale, sphScale);
+          const sphOp = Math.max(0, shockwaveSphereMat.uniforms.opacityVal.value - dt * 1.4);
+          shockwaveSphereMat.uniforms.opacityVal.value = sphOp;
+          if (sphOp <= 0) shockwaveSphere.visible = false;
+        }
+
+        // 3. Update Ember & Fire Particles
+        let activeParticles = 0;
+        for (let i = 0; i < expParticles.length; i++) {
+          const p = expParticles[i];
+          if (p.life > 0) {
+            p.life -= dt / p.maxLife;
+            p.pos.addScaledVector(p.vel, dt * 28.0);
+            p.vel.multiplyScalar(Math.pow(0.85, dt * 60)); // air/space drag in expanding cloud
+            const t = Math.max(0, p.life);
+
+            expPos[i * 3] = p.pos.x;
+            expPos[i * 3 + 1] = p.pos.y;
+            expPos[i * 3 + 2] = p.pos.z;
+
+            expSizes[i] = p.size * t * (1.0 + (1.0 - t) * 1.8);
+
+            // Transition: Pure Incandescent White -> Radiant Yellow -> Red-Orange -> Dark Charcoal Ash
+            expCol[i * 3] = p.color.r * (t > 0.3 ? 1.0 : t * 3.0);
+            expCol[i * 3 + 1] = p.color.g * (t > 0.6 ? 1.0 : (t > 0.2 ? t * 1.6 : 0));
+            expCol[i * 3 + 2] = p.color.b * (t > 0.8 ? 1.0 : (t > 0.4 ? t * 0.8 : 0));
+            activeParticles++;
+          } else {
+            expSizes[i] = 0;
+          }
+        }
+        expGeo.attributes.position.needsUpdate = true;
+        expGeo.attributes.color.needsUpdate = true;
+        expGeo.attributes.size.needsUpdate = true;
+        if (activeParticles === 0) expPoints.visible = false;
+
+        // 4. Update Hull Shards Debris
+        debrisPieces.forEach(dp => {
+          if (dp.life > 0) {
+            dp.life -= dt / 2.3;
+            dp.mesh.position.addScaledVector(dp.vel, dt * 28.0);
+            dp.mesh.rotation.x += dp.rotVel.x * dt;
+            dp.mesh.rotation.y += dp.rotVel.y * dt;
+            dp.mesh.rotation.z += dp.rotVel.z * dt;
+            const mat = dp.mesh.material as THREE.MeshStandardMaterial;
+            mat.emissiveIntensity = Math.max(0, dp.life * 2.0);
+            if (dp.life <= 0) dp.mesh.visible = false;
+          }
+        });
+
+        // Respawn when timer finishes
+        if (explosionTimer <= 0) {
+          respawnShip();
+        }
+      }
+
+      // Dynamic Camera Shake Decay
+      if (cameraShakeIntensity > 0) {
+        cameraShakeIntensity = Math.max(0, cameraShakeIntensity - dt * 1.4);
+        const shake = cameraShakeIntensity * 0.32;
+        camera.position.x += (Math.random() - 0.5) * shake;
+        camera.position.y += (Math.random() - 0.5) * shake;
+        camera.position.z += (Math.random() - 0.5) * shake;
+      }
+    }
+
+    function respawnShip() {
+      isExploded = false;
+      playerShip.visible = true;
+      playerShip.position.set(30, 5, 0);
+      playerShip.quaternion.set(0, 0, 0, 1);
+      shipVelocity.set(0, 0, 0);
+      shipAngularVelocity.set(0, 0, 0);
+
+      // Clean up explosion artifacts
+      fireballMesh.visible = false;
+      expPoints.visible = false;
+      debrisGroup.visible = false;
+      shockwaveMesh.visible = false;
+      shockwaveSphere.visible = false;
+      explosionLight.intensity = 0;
+
+      showToast("🚀 SHIP REPAIRED & RESPAWNED AT SAFE ORBIT");
+    }
+
     // ── ENGINE PARTICLE TRAIL ──
     const trailParticles: { pos: THREE.Vector3; life: number; maxLife: number }[] = [];
     const TRAIL_COUNT = 300;
@@ -1097,26 +1553,75 @@ const Index = () => {
             shipVelocity.lerp(pureFwd, 4.0 * dt);
           }
           shipVelocity.multiplyScalar(Math.pow(0.8, dt));
-          playerShip.position.add(shipVelocity);
-          playerShip.updateMatrixWorld(true);
+
+          if (!isExploded) {
+            playerShip.position.add(shipVelocity);
+            playerShip.updateMatrixWorld(true);
+
+            // ── COLLISION DETECTION ──
+            const shipPos = playerShip.position;
+            const shipRadius = TARGET_SHIP_SIZE * 0.4;
+
+            // 1. Collision with Sun (radius ~ 6.0)
+            const sunDist = shipPos.distanceTo(sunMesh.position);
+            if (sunDist < 6.0 + shipRadius) {
+              triggerExplosion(shipPos.clone(), 'The Sun');
+            }
+
+            // 2. Collision with Planets & Moons
+            if (!isExploded) {
+              for (const b of ssBodies) {
+                const wp = new THREE.Vector3();
+                b.mesh.getWorldPosition(wp);
+                const bodyRadius = b.mesh.userData?.radius || (b.type === 'moon' ? 0.3 : 1.0);
+                const dist = shipPos.distanceTo(wp);
+                if (dist < bodyRadius + shipRadius) {
+                  triggerExplosion(shipPos.clone(), b.mesh.userData?.name || 'Celestial Body');
+                  break;
+                }
+              }
+            }
+
+            // 3. Collision with Asteroid Belt (dist from center between 39.5 and 47.5, |y| < 1.2)
+            if (!isExploded) {
+              const rXZ = Math.sqrt(shipPos.x * shipPos.x + shipPos.z * shipPos.z);
+              if (rXZ >= 39.5 && rXZ <= 47.5 && Math.abs(shipPos.y) <= 1.2) {
+                // High density asteroid collision probability on flight
+                if (Math.random() < (currentSpeed > 0.005 ? 0.35 : 0.08) * dt * 60) {
+                  triggerExplosion(shipPos.clone(), 'Asteroid Belt Debris');
+                }
+              }
+            }
+
+            // 4. Collision with Kuiper Belt (dist from center between 127 and 149, |y| < 2.5)
+            if (!isExploded) {
+              const rXZ = Math.sqrt(shipPos.x * shipPos.x + shipPos.z * shipPos.z);
+              if (rXZ >= 127 && rXZ <= 149 && Math.abs(shipPos.y) <= 2.5) {
+                if (Math.random() < (currentSpeed > 0.005 ? 0.25 : 0.06) * dt * 60) {
+                  triggerExplosion(shipPos.clone(), 'Kuiper Belt Comet');
+                }
+              }
+            }
+          }
 
           updateTrail(dt);
+          updateExplosion(dt);
 
-          document.getElementById('fhud-speed')!.innerText = shipVelocity.length().toFixed(5);
+          document.getElementById('fhud-speed')!.innerText = isExploded ? '0.00000' : shipVelocity.length().toFixed(5);
           const thrPct = ({0.0002:5, 0.001:25, 0.005:60, 0.02:100} as any)[currentThrust] || 5;
-          document.getElementById('fhud-thrust-bar')!.style.width = thrPct + '%';
-          document.getElementById('fhud-thrust')!.innerText = 'LVL ' + gearLevel;
+          document.getElementById('fhud-thrust-bar')!.style.width = isExploded ? '0%' : (thrPct + '%');
+          document.getElementById('fhud-thrust')!.innerText = isExploded ? 'DESTROYED' : ('LVL ' + gearLevel);
           const altFromSun = playerShip.position.length().toFixed(1);
           document.getElementById('fhud-alt')!.innerText = altFromSun + ' AU';
 
           const mesh2 = playerShip.getObjectByName('TheShipModel');
-          if (mesh2) mesh2.visible = true;
-          bloomPass.strength = 1.4;
+          if (mesh2) mesh2.visible = !isExploded;
+          bloomPass.strength = isExploded ? 2.2 : 1.4;
           const cOff = new THREE.Vector3(0, TARGET_SHIP_SIZE*0.8, TARGET_SHIP_SIZE*3.5).applyMatrix4(playerShip.matrixWorld);
           camera.position.copy(cOff);
           const lookTgt = new THREE.Vector3(0, TARGET_SHIP_SIZE*0.3, -TARGET_SHIP_SIZE*10).applyMatrix4(playerShip.matrixWorld);
           const upVec = new THREE.Vector3(0,1,0).applyQuaternion(playerShip.quaternion);
-          if (mesh2) {
+          if (mesh2 && !isExploded) {
             const sf = new THREE.Vector3(0,0,-1).applyQuaternion(playerShip.quaternion);
             upVec.applyAxisAngle(sf, mesh2.rotation.z * 0.5);
           }
@@ -1126,6 +1631,7 @@ const Index = () => {
           camera.quaternion.slerp(tq, 0.1);
         } else {
           controls.update();
+          updateExplosion(dt);
         }
 
         // Smooth travel animation
