@@ -21,7 +21,9 @@ const Index = () => {
     //  UNIVERSE V3.0 — STELLAR EDITION
     // ════════════════════════════════════════════════════════════
 
-    const TARGET_SHIP_SIZE = 0.00001;
+    // Scaled micro-vessel size (Sun radius = 12.0, Earth = 1.0, Moon = 0.3)
+    // Spaceship size is finely calibrated so it feels like an authentic vessel against planetary scale
+    const TARGET_SHIP_SIZE = 0.045;
     const GLOBAL_SPEED_SCALE = 0.01;
     const G_CONSTANT = 0.0000008;
 
@@ -892,7 +894,7 @@ const Index = () => {
     })();
 
     const trailMat = new THREE.PointsMaterial({
-      size: 0.0004, vertexColors: true, map: trailTex,
+      size: 0.08, vertexColors: true, map: trailTex,
       transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
       sizeAttenuation: true
     });
@@ -905,7 +907,7 @@ const Index = () => {
     let trailIndex = 0;
 
     function spawnTrailParticle() {
-      const exhaust = new THREE.Vector3(0, 0, TARGET_SHIP_SIZE * 0.6).applyMatrix4(playerShip.matrixWorld);
+      const exhaust = new THREE.Vector3(0, 0, TARGET_SHIP_SIZE * 0.55).applyMatrix4(playerShip.matrixWorld);
       const p = trailParticles[trailIndex % TRAIL_COUNT];
       p.pos.copy(exhaust);
       p.life = 1.0;
@@ -921,7 +923,7 @@ const Index = () => {
         trailPos[i*3] = p.pos.x;
         trailPos[i*3+1] = p.pos.y;
         trailPos[i*3+2] = p.pos.z;
-        trailSizes[i] = t * 0.002;
+        trailSizes[i] = t * 0.06;
         const hot = t > 0.7;
         trailCol[i*3] = hot ? 0.5 : t * 0.1;
         trailCol[i*3+1] = hot ? 0.8*t : t * 0.5;
@@ -933,11 +935,78 @@ const Index = () => {
     }
 
     function buildProceduralShip() {
-      const mat = new THREE.MeshStandardMaterial({ color: 0x9aaabb, metalness: 0.8, roughness: 0.3 });
-      const body = new THREE.Mesh(new THREE.ConeGeometry(TARGET_SHIP_SIZE * 0.2, TARGET_SHIP_SIZE, 8), mat);
-      body.rotation.x = -Math.PI / 2;
-      body.name = "TheShipModel";
-      playerShip.add(body);
+      // Sleek sci-fi reconnaissance cruiser fuselage
+      const hullMat = new THREE.MeshStandardMaterial({
+        color: 0x95a5b5,
+        metalness: 0.85,
+        roughness: 0.25
+      });
+      const darkMat = new THREE.MeshStandardMaterial({
+        color: 0x1f242b,
+        metalness: 0.9,
+        roughness: 0.3
+      });
+      const glowMat = new THREE.MeshStandardMaterial({
+        color: 0x00ffff,
+        emissive: 0x00ccff,
+        emissiveIntensity: 2.0
+      });
+
+      const shipMeshGroup = new THREE.Group();
+      shipMeshGroup.name = "TheShipModel";
+
+      // Main aerodynamic needle fuselage
+      const fuselage = new THREE.Mesh(new THREE.ConeGeometry(TARGET_SHIP_SIZE * 0.22, TARGET_SHIP_SIZE, 8), hullMat);
+      fuselage.rotation.x = -Math.PI / 2;
+      shipMeshGroup.add(fuselage);
+
+      // Cockpit canopy (cyan glowing visor)
+      const canopy = new THREE.Mesh(new THREE.BoxGeometry(TARGET_SHIP_SIZE * 0.12, TARGET_SHIP_SIZE * 0.08, TARGET_SHIP_SIZE * 0.25), glowMat);
+      canopy.position.set(0, TARGET_SHIP_SIZE * 0.06, -TARGET_SHIP_SIZE * 0.1);
+      shipMeshGroup.add(canopy);
+
+      // Left & Right Swept Delta Wings
+      const wingGeo = new THREE.BufferGeometry();
+      const wingVertices = new Float32Array([
+        // Left wing triangle
+        0, 0, -TARGET_SHIP_SIZE * 0.1,
+        -TARGET_SHIP_SIZE * 0.65, 0, TARGET_SHIP_SIZE * 0.45,
+        0, 0, TARGET_SHIP_SIZE * 0.35,
+        // Right wing triangle
+        0, 0, -TARGET_SHIP_SIZE * 0.1,
+        0, 0, TARGET_SHIP_SIZE * 0.35,
+        TARGET_SHIP_SIZE * 0.65, 0, TARGET_SHIP_SIZE * 0.45,
+      ]);
+      wingGeo.setAttribute('position', new THREE.BufferAttribute(wingVertices, 3));
+      wingGeo.computeVertexNormals();
+      const wings = new THREE.Mesh(wingGeo, darkMat);
+      shipMeshGroup.add(wings);
+
+      // Twin Engine Thruster Blocks
+      const engineGeo = new THREE.CylinderGeometry(TARGET_SHIP_SIZE * 0.06, TARGET_SHIP_SIZE * 0.08, TARGET_SHIP_SIZE * 0.25, 6);
+      engineGeo.rotateX(Math.PI / 2);
+      const engLeft = new THREE.Mesh(engineGeo, darkMat);
+      engLeft.position.set(-TARGET_SHIP_SIZE * 0.18, 0, TARGET_SHIP_SIZE * 0.35);
+      const engRight = new THREE.Mesh(engineGeo, darkMat);
+      engRight.position.set(TARGET_SHIP_SIZE * 0.18, 0, TARGET_SHIP_SIZE * 0.35);
+      shipMeshGroup.add(engLeft);
+      shipMeshGroup.add(engRight);
+
+      // Engine Exhaust Nozzle Glows
+      const nozzleGeo = new THREE.CircleGeometry(TARGET_SHIP_SIZE * 0.06, 8);
+      const nozzleLeft = new THREE.Mesh(nozzleGeo, glowMat);
+      nozzleLeft.position.set(-TARGET_SHIP_SIZE * 0.18, 0, TARGET_SHIP_SIZE * 0.48);
+      const nozzleRight = new THREE.Mesh(nozzleGeo, glowMat);
+      nozzleRight.position.set(TARGET_SHIP_SIZE * 0.18, 0, TARGET_SHIP_SIZE * 0.48);
+      shipMeshGroup.add(nozzleLeft);
+      shipMeshGroup.add(nozzleRight);
+
+      // Rear Engine Light
+      engineGlow = new THREE.PointLight(0x00ddff, 0.4, TARGET_SHIP_SIZE * 15);
+      engineGlow.position.set(0, 0, TARGET_SHIP_SIZE * 0.5);
+      shipMeshGroup.add(engineGlow);
+
+      playerShip.add(shipMeshGroup);
     }
     buildProceduralShip();
     playerShip.position.set(30, 5, 0);
@@ -1617,9 +1686,9 @@ const Index = () => {
           const mesh2 = playerShip.getObjectByName('TheShipModel');
           if (mesh2) mesh2.visible = !isExploded;
           bloomPass.strength = isExploded ? 2.2 : 1.4;
-          const cOff = new THREE.Vector3(0, TARGET_SHIP_SIZE*0.8, TARGET_SHIP_SIZE*3.5).applyMatrix4(playerShip.matrixWorld);
+          const cOff = new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.9 + 0.02, TARGET_SHIP_SIZE * 3.8 + 0.08).applyMatrix4(playerShip.matrixWorld);
           camera.position.copy(cOff);
-          const lookTgt = new THREE.Vector3(0, TARGET_SHIP_SIZE*0.3, -TARGET_SHIP_SIZE*10).applyMatrix4(playerShip.matrixWorld);
+          const lookTgt = new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.2, -TARGET_SHIP_SIZE * 8 - 0.2).applyMatrix4(playerShip.matrixWorld);
           const upVec = new THREE.Vector3(0,1,0).applyQuaternion(playerShip.quaternion);
           if (mesh2 && !isExploded) {
             const sf = new THREE.Vector3(0,0,-1).applyQuaternion(playerShip.quaternion);
