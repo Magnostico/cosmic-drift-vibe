@@ -99,22 +99,21 @@ const Index = () => {
     //  SOLAR SYSTEM
     // ════════════════════════════════════════════════════════════
     const sceneSS = new THREE.Scene();
-    sceneSS.add(new THREE.AmbientLight(0x222233, 1.2));
+    sceneSS.add(new THREE.AmbientLight(0x44445a, 2.2));
 
-    const sunLight = new THREE.PointLight(0xfffbe8, 3.0, 500);
-    sunLight.decay = 1;
-    sunLight.castShadow = true;
-    sunLight.shadow.mapSize.width = 2048;
-    sunLight.shadow.mapSize.height = 2048;
-    sunLight.shadow.camera.near = 0.1;
-    sunLight.shadow.camera.far = 500;
+    const sunLight = new THREE.PointLight(0xfff5e4, 5.5, 1200, 0.4);
+    sunLight.castShadow = false;
     sceneSS.add(sunLight);
+
+    // Subtle global hemisphere fill to give soft detail on shaded sides of planets
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x111122, 1.2);
+    sceneSS.add(hemiLight);
 
     // Bloom composer
     const composer = new EffectComposer(renderer);
     composer.addPass(new RenderPass(sceneSS, camera));
     const bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(window.innerWidth, window.innerHeight), 1.4, 0.5, 0.82
+      new THREE.Vector2(window.innerWidth, window.innerHeight), 1.2, 0.45, 0.75
     );
     composer.addPass(bloomPass);
 
@@ -130,22 +129,22 @@ const Index = () => {
     sceneSS.add(sunMesh);
 
     // Sun corona glow
-    const coronaGeo = new THREE.SphereGeometry(7.2, 32, 32);
+    const coronaGeo = new THREE.SphereGeometry(7.6, 32, 32);
     const coronaMat = new THREE.ShaderMaterial({
-      uniforms: { c: { value: 0.3 }, p: { value: 4.5 }, glowColor: { value: new THREE.Color(0xffdd88) } },
+      uniforms: { c: { value: 0.35 }, p: { value: 4.0 }, glowColor: { value: new THREE.Color(0xffbb55) } },
       vertexShader: `
         varying float intensity;
         void main() {
           vec3 vNormal = normalize(normalMatrix * normal);
           vec3 vNormel = normalize(vec3(modelViewMatrix * vec4(position, 1.0)));
-          intensity = pow(0.6 - dot(vNormal, vNormel), 4.0);
+          intensity = pow(0.65 - dot(vNormal, vNormel), 3.5);
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }`,
       fragmentShader: `
         uniform vec3 glowColor;
         varying float intensity;
         void main() {
-          gl_FragColor = vec4(glowColor * intensity, intensity * 0.8);
+          gl_FragColor = vec4(glowColor * intensity, intensity * 0.9);
         }`,
       side: THREE.BackSide, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false
     });
@@ -536,7 +535,17 @@ const Index = () => {
       if (hit) {
         initAudio();
         audio.playPlanetClick();
-        targetPlanet = hit.object as THREE.Mesh;
+        let clickedMesh = hit.object as THREE.Mesh;
+        const name = clickedMesh.userData?.name;
+        if (name) {
+          if (name === 'The Sun') {
+            clickedMesh = sunMesh;
+          } else {
+            const body = ssBodies.find((b: any) => b.mesh?.userData?.name === name);
+            if (body) clickedMesh = body.mesh;
+          }
+        }
+        targetPlanet = clickedMesh;
         
         targetPlanetData = ssBodies.find((b: any) => b.mesh===targetPlanet);
         isTransitioning = true;
@@ -792,6 +801,132 @@ const Index = () => {
       console.warn('Default spaceship model failed to load:', err);
     });
 
+    // ── GOOGLE ARTS & CULTURE CELESTIAL 3D MODELS ──
+    const celestialModels: {
+      name: string;
+      file: string;
+      targetDiameter: number;
+      tiltDeg: number;
+      isSun?: boolean;
+      isMoon?: boolean;
+    }[] = [
+      { name: 'The Sun', file: 'sun.glb', targetDiameter: 12, tiltDeg: 7.25, isSun: true },
+      { name: 'Mercury', file: 'mercury.glb', targetDiameter: 1.0, tiltDeg: 0.034 },
+      { name: 'Venus', file: 'venus.glb', targetDiameter: 2.4, tiltDeg: 177.4 },
+      { name: 'Earth', file: 'earth.glb', targetDiameter: 2.6, tiltDeg: 23.5 },
+      { name: 'The Moon', file: 'moon.glb', targetDiameter: 0.6, tiltDeg: 6.68, isMoon: true },
+      { name: 'Mars', file: 'mars.glb', targetDiameter: 1.4, tiltDeg: 25.2 },
+      { name: 'Jupiter', file: 'jupiter.glb', targetDiameter: 7.0, tiltDeg: 3.1 },
+      { name: 'Saturn', file: 'saturn.glb', targetDiameter: 5.6, tiltDeg: 26.7 },
+      { name: 'Uranus', file: 'uranus.glb', targetDiameter: 4.0, tiltDeg: 97.8 },
+      { name: 'Neptune', file: 'neptune.glb', targetDiameter: 3.8, tiltDeg: 28.3 },
+      { name: 'Pluto', file: 'pluto.glb', targetDiameter: 0.6, tiltDeg: 122.5 }
+    ];
+
+    function loadModelSequential(index: number) {
+      if (index >= celestialModels.length) return;
+      const cfg = celestialModels[index];
+
+      gltfLoader.load(`/models/${cfg.file}`, (gltf) => {
+        let targetMesh: THREE.Mesh | null = null;
+        let parentSys: THREE.Object3D | null = null;
+        let bodyRef: any = null;
+
+        if (cfg.isSun) {
+          targetMesh = sunMesh;
+          parentSys = sceneSS;
+        } else if (cfg.isMoon) {
+          const mBody = ssBodies.find((b: any) => b.type === 'moon' && b.mesh?.userData?.name === 'The Moon');
+          if (mBody) {
+            targetMesh = mBody.mesh;
+            parentSys = mBody.pivot;
+            bodyRef = mBody;
+          }
+        } else {
+          const pBody = ssBodies.find((b: any) => b.type === 'planet' && b.mesh?.userData?.name === cfg.name);
+          if (pBody) {
+            targetMesh = pBody.mesh;
+            parentSys = pBody.system;
+            bodyRef = pBody;
+          }
+        }
+
+        if (targetMesh && parentSys) {
+          // Hide old procedural sphere mesh while preserving position and raycast data
+          targetMesh.visible = false;
+          const bodyData = targetMesh.userData;
+
+          // Center and normalize scale
+          const model = gltf.scene;
+          model.name = `${cfg.name}_3DModel`;
+
+          const bbox = new THREE.Box3().setFromObject(model);
+          const center = new THREE.Vector3();
+          bbox.getCenter(center);
+          model.position.sub(center);
+
+          const size = new THREE.Vector3();
+          bbox.getSize(size);
+          const maxDim = Math.max(size.x, size.y, size.z) || 1;
+          const scale = cfg.targetDiameter / maxDim;
+          model.scale.setScalar(scale);
+
+          // Adjust materials while keeping standard lighting
+          model.traverse((child: any) => {
+            if (child.isMesh) {
+              if (cfg.isSun) {
+                child.castShadow = false;
+                child.receiveShadow = false;
+                if (child.material) {
+                  if (child.material.isMeshStandardMaterial) {
+                    child.material.emissive = new THREE.Color(0xffbb44);
+                    child.material.emissiveIntensity = 1.0;
+                  }
+                }
+              } else {
+                child.castShadow = false;
+                child.receiveShadow = false;
+                if (child.material) {
+                  if (child.material.isMeshStandardMaterial) {
+                    child.material.roughness = 0.65;
+                    child.material.metalness = 0.05;
+                  }
+                  child.material.needsUpdate = true;
+                }
+              }
+              child.userData = bodyData;
+              interactables.push(child);
+            }
+          });
+
+          // Pivot with axial tilt
+          const pivot = new THREE.Group();
+          pivot.name = `${cfg.name}_3DPivot`;
+          pivot.rotation.z = THREE.MathUtils.degToRad(cfg.tiltDeg);
+          pivot.add(model);
+
+          if (cfg.isMoon) {
+            pivot.position.copy(targetMesh.position);
+          }
+
+          parentSys.add(pivot);
+
+          if (bodyRef) {
+            bodyRef.custom3DPivot = pivot;
+          } else if (cfg.isSun) {
+            (sunMesh as any).custom3DPivot = pivot;
+          }
+        }
+
+        setTimeout(() => loadModelSequential(index + 1), 60);
+      }, undefined, (err) => {
+        console.warn(`Could not load model for ${cfg.name}:`, err);
+        setTimeout(() => loadModelSequential(index + 1), 60);
+      });
+    }
+
+    loadModelSequential(0);
+
     const onResize = () => {
       camera.aspect = window.innerWidth/window.innerHeight;
       camera.updateProjectionMatrix();
@@ -801,10 +936,15 @@ const Index = () => {
     window.addEventListener('resize', onResize);
 
     // ── PLANET NAVIGATOR BUTTONS ──
-    const navBodies = [{ name: 'The Sun', mesh: sunMesh }, ...planetsData.map((p, i) => {
-      const body = ssBodies.find((b: any) => b.mesh?.userData?.name === p.name);
-      return { name: p.name, mesh: body?.mesh as THREE.Mesh };
-    })].filter(b => b.mesh);
+    const moonBody = ssBodies.find((b: any) => b.type === 'moon' && b.mesh?.userData?.name === 'The Moon');
+    const navBodies = [
+      { name: 'The Sun', mesh: sunMesh },
+      ...planetsData.map((p) => {
+        const body = ssBodies.find((b: any) => b.mesh?.userData?.name === p.name);
+        return { name: p.name, mesh: body?.mesh as THREE.Mesh };
+      }),
+      ...(moonBody ? [{ name: 'The Moon', mesh: moonBody.mesh as THREE.Mesh }] : [])
+    ].filter(b => b.mesh);
 
     navBodies.forEach(b => {
       const btn = document.getElementById('nav-' + b.name);
@@ -829,6 +969,9 @@ const Index = () => {
         renderer.render(sceneMW, camera);
       } else {
         sunMesh.rotation.y += 0.0003 * GLOBAL_SPEED_SCALE * timeMultiplier;
+        if ((sunMesh as any).custom3DPivot) {
+          (sunMesh as any).custom3DPivot.rotation.y += 0.0003 * GLOBAL_SPEED_SCALE * timeMultiplier;
+        }
         astBelt.rotation.y += 0.0002 * GLOBAL_SPEED_SCALE * timeMultiplier;
         kuiperBelt.rotation.y += 0.00005 * GLOBAL_SPEED_SCALE * timeMultiplier;
         starLayer1.rotation.y += 0.00003 * dt;
@@ -843,9 +986,15 @@ const Index = () => {
               b.a * Math.sqrt(1 - b.e*b.e) * Math.sin(b.angle)
             );
             b.mesh.rotation.y += 0.004 * GLOBAL_SPEED_SCALE * timeMultiplier;
+            if (b.custom3DPivot) {
+              b.custom3DPivot.rotation.y += 0.004 * GLOBAL_SPEED_SCALE * timeMultiplier;
+            }
           } else if (b.type === 'moon') {
             b.pivot.rotation.y += b.speed * GLOBAL_SPEED_SCALE * timeMultiplier;
             b.mesh.rotation.y += 0.008 * GLOBAL_SPEED_SCALE * timeMultiplier;
+            if (b.custom3DPivot) {
+              b.custom3DPivot.rotation.y += 0.008 * GLOBAL_SPEED_SCALE * timeMultiplier;
+            }
           }
         });
 
@@ -1117,6 +1266,7 @@ const Index = () => {
           <button id="nav-Mercury"><span className="planet-dot" style={{ background:'#aaaaaa' }} />Mercury</button>
           <button id="nav-Venus"><span className="planet-dot" style={{ background:'#ddaa66' }} />Venus</button>
           <button id="nav-Earth"><span className="planet-dot" style={{ background:'#4488ff' }} />Earth</button>
+          <button id="nav-The Moon"><span className="planet-dot" style={{ background:'#e0e0e0' }} />Moon</button>
           <button id="nav-Mars"><span className="planet-dot" style={{ background:'#cc4422' }} />Mars</button>
           <button id="nav-Jupiter"><span className="planet-dot" style={{ background:'#cc9955' }} />Jupiter</button>
           <button id="nav-Saturn"><span className="planet-dot" style={{ background:'#ddbb77' }} />Saturn</button>
