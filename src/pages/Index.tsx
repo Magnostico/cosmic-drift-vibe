@@ -13,7 +13,8 @@ const Index = () => {
   const initialized = useRef(false);
 
   useEffect(() => {
-    if (!canvasRef.current || initialized.current) return;
+    const container = canvasRef.current;
+    if (!container || initialized.current) return;
     initialized.current = true;
 
     // ════════════════════════════════════════════════════════════
@@ -31,8 +32,6 @@ const Index = () => {
     let showOrbits = false;
     let orreryMode = false;
     let isTransitioning = false;
-    let cameraView = 'chase';
-    let cockpitYAngle = -Math.PI / 2; // locked at -90°
     let toastTimeout: ReturnType<typeof setTimeout>;
     const audio = new SpaceAudioEngine();
     let audioInitialized = false;
@@ -44,7 +43,7 @@ const Index = () => {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    canvasRef.current.appendChild(renderer.domElement);
+    container.appendChild(renderer.domElement);
 
     const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.0000005, 3000);
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -415,15 +414,6 @@ const Index = () => {
     const keys = { up:false, down:false, left:false, right:false, space:false, q:false, e:false, brake:false };
     let engineGlow: THREE.PointLight | null = null;
     let currentThrust = 0.0002;
-    const cockpitGroup = new THREE.Group();
-    cockpitGroup.name = "CockpitModel";
-    cockpitGroup.visible = false;
-    let cockpitLoaded = false;
-    // Interior light for cockpit view - ambient so it illuminates evenly
-    const cockpitLight = new THREE.AmbientLight(0xccccdd, 0);
-    // Also a dim directional from above for depth
-    const cockpitDirLight = new THREE.DirectionalLight(0xffffff, 0);
-    cockpitDirLight.position.set(0, TARGET_SHIP_SIZE * 0.5, -TARGET_SHIP_SIZE * 0.3);
     const gravityAccumulator = new THREE.Vector3();
 
     // ── ENGINE PARTICLE TRAIL ──
@@ -496,10 +486,7 @@ const Index = () => {
     }
     buildProceduralShip();
     playerShip.position.set(30, 5, 0);
-    playerShip.add(cockpitGroup);
     sceneSS.add(playerShip);
-    sceneSS.add(cockpitLight);
-    sceneSS.add(cockpitDirLight);
 
     // ════════════════════════════════════════════════════════════
     //  EVENTS
@@ -517,9 +504,6 @@ const Index = () => {
       if (flightModeActive) {
         const thr: Record<string, [number, string]> = { Digit1:[0.0002,"SCENIC CRUISE"], Digit2:[0.001,"IMPULSE"], Digit3:[0.005,"COMBAT"], Digit4:[0.02,"HYPERDRIVE"] };
         if (thr[e.code]) { currentThrust = thr[e.code][0]; showToast("THRUST: "+thr[e.code][1]); audio.playGearShift(Object.keys(thr).indexOf(e.code)+1); }
-        if (e.code==='KeyC') {
-          toggleCameraCockpit();
-        }
       }
     };
 
@@ -603,8 +587,8 @@ const Index = () => {
     // ── TRAVEL STATE ──
     let travelTarget: THREE.Mesh | null = null;
     let travelProgress = 0;
-    let travelStartPos = new THREE.Vector3();
-    let travelStartTarget = new THREE.Vector3();
+    const travelStartPos = new THREE.Vector3();
+    const travelStartTarget = new THREE.Vector3();
     let isTraveling = false;
     const TRAVEL_DURATION = 2.0; // seconds
 
@@ -680,10 +664,6 @@ const Index = () => {
         controls.enabled = true; targetPlanet = null;
         document.getElementById('btn-flight-mode')!.innerText = '🚀 Pilot Ship';
         document.getElementById('btn-flight-mode')!.className = 'btn-success';
-        const btnView = document.getElementById('btn-view-cam');
-        if (btnView) btnView.style.display = 'none';
-        cameraView = 'chase';
-        cockpitGroup.visible = false;
         document.getElementById('btn-gravity')!.className = '';
         document.getElementById('btn-orrery')!.className = '';
         document.getElementById('btn-back-system')!.style.display = 'none';
@@ -720,33 +700,17 @@ const Index = () => {
       if (flightModeActive) {
         document.getElementById('btn-flight-mode')!.innerText = '✖ Exit Flight';
         document.getElementById('btn-flight-mode')!.className = 'btn-danger';
-        const btnView = document.getElementById('btn-view-cam');
-        if (btnView) {
-          btnView.style.display = 'inline-block';
-          btnView.innerText = cameraView === 'cockpit' ? '📷 Chase Cam' : '🎯 Cockpit Cam';
-          btnView.className = cameraView === 'cockpit' ? 'btn-active' : 'btn-cockpit';
-        }
         const off = new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.8, TARGET_SHIP_SIZE * 3.5).applyMatrix4(playerShip.matrixWorld);
         camera.position.copy(off);
-        showToast("FLIGHT MODE ── C = COCKPIT · 1-4 THRUST · SHIFT = BRAKE");
+        showToast("FLIGHT MODE ── 1-4 THRUST · SPACE = ACCEL · SHIFT = BRAKE");
       } else {
         document.getElementById('btn-flight-mode')!.innerText = '🚀 Pilot Ship';
         document.getElementById('btn-flight-mode')!.className = 'btn-success';
-        const btnView = document.getElementById('btn-view-cam');
-        if (btnView) btnView.style.display = 'none';
         isTransitioning = true;
-        cameraView = 'chase';
-        cockpitGroup.visible = false;
         const mesh = playerShip.getObjectByName('TheShipModel');
         if (mesh) mesh.visible = true;
       }
     };
-
-    document.getElementById('btn-view-cam')?.addEventListener('click', () => {
-      if (!flightModeActive) return;
-      initAudio();
-      toggleCameraCockpit();
-    });
 
     document.getElementById('btn-toggle-orbits')!.addEventListener('click', () => {
       initAudio(); showOrbits = !showOrbits; audio.playToggle(showOrbits);
@@ -802,8 +766,7 @@ const Index = () => {
     });
 
     function applyShipModel(scene: THREE.Group) {
-      const toRemove = playerShip.children.filter(c => c !== cockpitGroup);
-      toRemove.forEach(c => playerShip.remove(c));
+      playerShip.clear();
       const model = scene;
       const box = new THREE.Box3().setFromObject(model);
       const sz = new THREE.Vector3(); box.getSize(sz);
@@ -819,33 +782,7 @@ const Index = () => {
       playerShip.add(engineGlow);
     }
 
-    function applyCockpitModel(scene: THREE.Group) {
-      while (cockpitGroup.children.length > 0) cockpitGroup.remove(cockpitGroup.children[0]);
-      const model = scene;
-      const box = new THREE.Box3().setFromObject(model);
-      const sz = new THREE.Vector3(); box.getSize(sz);
-      const maxDim = Math.max(sz.x, sz.y, sz.z);
-      const scale = TARGET_SHIP_SIZE / maxDim;
-      model.scale.setScalar(scale);
-      const sc = new THREE.Box3().setFromObject(model);
-      const ctr = new THREE.Vector3(); sc.getCenter(ctr);
-      model.position.sub(ctr);
-      model.traverse((child: any) => {
-        if (child.isMesh && child.material) {
-          const mats = Array.isArray(child.material) ? child.material : [child.material];
-          mats.forEach((m: any) => {
-            m.side = THREE.DoubleSide;
-            // Ensure textures/materials render cleanly under cockpit lighting
-            if (m.roughness !== undefined && m.roughness < 0.2) m.roughness = 0.3;
-          });
-        }
-      });
-      cockpitGroup.add(model);
-      cockpitLoaded = true;
-      cockpitGroup.visible = (cameraView === 'cockpit');
-    }
-
-    // Auto-load bundled default models (Spaceship & Cockpit)
+    // Auto-load bundled default spaceship model
     const gltfLoader = new GLTFLoader();
     gltfLoader.load('/models/spaceship.glb', (gltf) => {
       applyShipModel(gltf.scene);
@@ -853,58 +790,6 @@ const Index = () => {
       showToast('🚀 Spaceship model loaded');
     }, undefined, (err) => {
       console.warn('Default spaceship model failed to load:', err);
-    });
-
-    gltfLoader.load('/models/spaceship_cockpit.glb', (gltf) => {
-      applyCockpitModel(gltf.scene);
-      console.log('Default spaceship cockpit loaded automatically from /models/spaceship_cockpit.glb');
-    }, undefined, (err) => {
-      console.warn('Default cockpit model failed to load:', err);
-    });
-
-    function toggleCameraCockpit() {
-      if (cameraView === 'chase') {
-        cameraView = 'cockpit';
-        cockpitGroup.visible = cockpitLoaded;
-        const btnView = document.getElementById('btn-view-cam');
-        if (btnView) { btnView.innerText = '📷 Chase Cam'; btnView.className = 'btn-active'; }
-        showToast("COCKPIT VIEW (C)");
-      } else {
-        cameraView = 'chase';
-        cockpitGroup.visible = false;
-        const btnView = document.getElementById('btn-view-cam');
-        if (btnView) { btnView.innerText = '🎯 Cockpit Cam'; btnView.className = 'btn-cockpit'; }
-        showToast("CHASE CAM (C)");
-      }
-    }
-
-    document.getElementById('btn-upload-model')!.addEventListener('click', () => document.getElementById('file-input')!.click());
-    document.getElementById('file-input')!.addEventListener('change', (event: any) => {
-      const files = Array.from(event.target.files) as File[];
-      const main = files.find(f => f.name.endsWith('.gltf')||f.name.endsWith('.glb'));
-      if (!main) return;
-      const fileMap: Record<string, string> = {}; files.forEach(f => fileMap[f.name] = URL.createObjectURL(f));
-      const mgr = new THREE.LoadingManager();
-      mgr.setURLModifier((url: string) => fileMap[url.split('/').pop()!] || url);
-      new GLTFLoader(mgr).load(fileMap[main.name], (gltf: any) => {
-        applyShipModel(gltf.scene);
-        showToast("SHIP MODEL LOADED — Q/E TO CALIBRATE");
-      });
-    });
-
-    // ── COCKPIT MODEL UPLOAD ──
-    document.getElementById('btn-upload-cockpit')!.addEventListener('click', () => document.getElementById('cockpit-file-input')!.click());
-    document.getElementById('cockpit-file-input')!.addEventListener('change', (event: any) => {
-      const files = Array.from(event.target.files) as File[];
-      const main = files.find(f => f.name.endsWith('.gltf')||f.name.endsWith('.glb'));
-      if (!main) return;
-      const fileMap: Record<string, string> = {}; files.forEach(f => fileMap[f.name] = URL.createObjectURL(f));
-      const mgr = new THREE.LoadingManager();
-      mgr.setURLModifier((url: string) => fileMap[url.split('/').pop()!] || url);
-      new GLTFLoader(mgr).load(fileMap[main.name], (gltf: any) => {
-        applyCockpitModel(gltf.scene);
-        showToast("COCKPIT LOADED — PRESS C IN FLIGHT MODE");
-      });
     });
 
     const onResize = () => {
@@ -1024,7 +909,7 @@ const Index = () => {
 
           if (engineGlow) {
             engineGlow.intensity += (targetGlow - engineGlow.intensity) * 10 * dt;
-            engineGlow.visible = cameraView !== 'cockpit';
+            engineGlow.visible = true;
           }
 
           // Newtonian gravity
@@ -1075,40 +960,21 @@ const Index = () => {
           const altFromSun = playerShip.position.length().toFixed(1);
           document.getElementById('fhud-alt')!.innerText = altFromSun + ' AU';
 
-          if (cameraView === 'cockpit') {
-            const mesh2 = playerShip.getObjectByName('TheShipModel');
-            if (mesh2) mesh2.visible = false;
-            cockpitGroup.visible = cockpitLoaded;
-            cockpitLight.intensity = 0.6;
-            cockpitDirLight.intensity = 0.4;
-            bloomPass.strength = 0.3;
-            // Camera at pilot seat: centered inside ship
-            const cPos = new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.05, 0).applyMatrix4(playerShip.matrixWorld);
-            camera.position.copy(cPos);
-            // Copy ship orientation then apply user-adjustable cockpit angle
-            camera.quaternion.copy(playerShip.quaternion);
-            const cockpitRotFix = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), cockpitYAngle);
-            camera.quaternion.multiply(cockpitRotFix);
-          } else {
-            const mesh2 = playerShip.getObjectByName('TheShipModel');
-            if (mesh2) mesh2.visible = true;
-            cockpitGroup.visible = false;
-            cockpitLight.intensity = 0;
-            cockpitDirLight.intensity = 0;
-            bloomPass.strength = 1.4;
-            const cOff = new THREE.Vector3(0, TARGET_SHIP_SIZE*0.8, TARGET_SHIP_SIZE*3.5).applyMatrix4(playerShip.matrixWorld);
-            camera.position.copy(cOff);
-            const lookTgt = new THREE.Vector3(0, TARGET_SHIP_SIZE*0.3, -TARGET_SHIP_SIZE*10).applyMatrix4(playerShip.matrixWorld);
-            const upVec = new THREE.Vector3(0,1,0).applyQuaternion(playerShip.quaternion);
-            if (mesh2) {
-              const sf = new THREE.Vector3(0,0,-1).applyQuaternion(playerShip.quaternion);
-              upVec.applyAxisAngle(sf, mesh2.rotation.z * 0.5);
-            }
-            const tq = new THREE.Quaternion().setFromRotationMatrix(
-              new THREE.Matrix4().lookAt(camera.position, lookTgt, upVec)
-            );
-            camera.quaternion.slerp(tq, 0.1);
+          const mesh2 = playerShip.getObjectByName('TheShipModel');
+          if (mesh2) mesh2.visible = true;
+          bloomPass.strength = 1.4;
+          const cOff = new THREE.Vector3(0, TARGET_SHIP_SIZE*0.8, TARGET_SHIP_SIZE*3.5).applyMatrix4(playerShip.matrixWorld);
+          camera.position.copy(cOff);
+          const lookTgt = new THREE.Vector3(0, TARGET_SHIP_SIZE*0.3, -TARGET_SHIP_SIZE*10).applyMatrix4(playerShip.matrixWorld);
+          const upVec = new THREE.Vector3(0,1,0).applyQuaternion(playerShip.quaternion);
+          if (mesh2) {
+            const sf = new THREE.Vector3(0,0,-1).applyQuaternion(playerShip.quaternion);
+            upVec.applyAxisAngle(sf, mesh2.rotation.z * 0.5);
           }
+          const tq = new THREE.Quaternion().setFromRotationMatrix(
+            new THREE.Matrix4().lookAt(camera.position, lookTgt, upVec)
+          );
+          camera.quaternion.slerp(tq, 0.1);
         } else {
           controls.update();
         }
@@ -1176,8 +1042,8 @@ const Index = () => {
       window.removeEventListener('resize', onResize);
       renderer.dispose();
       audio.dispose();
-      if (canvasRef.current && renderer.domElement.parentNode === canvasRef.current) {
-        canvasRef.current.removeChild(renderer.domElement);
+      if (container && renderer.domElement.parentNode === container) {
+        container.removeChild(renderer.domElement);
       }
     };
   }, []);
@@ -1214,11 +1080,6 @@ const Index = () => {
           <button id="btn-back-galaxy" className="btn-danger">🌌 Galaxy</button>
           <button id="btn-back-system" className="btn-danger" style={{ display:'none' }}>☀ Free View</button>
           <button id="btn-flight-mode" className="btn-success">🚀 Pilot Ship</button>
-          <button id="btn-view-cam" className="btn-cockpit" style={{ display:'none' }}>🎯 Cockpit Cam</button>
-          <button id="btn-upload-model" className="btn-purple">📂 Load Ship</button>
-          <input type="file" id="file-input" accept=".glb,.gltf,.bin" multiple style={{ display:'none' }} />
-          <button id="btn-upload-cockpit" className="btn-cockpit">🎯 Load Cockpit</button>
-          <input type="file" id="cockpit-file-input" accept=".glb,.gltf,.bin" multiple style={{ display:'none' }} />
           <button id="btn-toggle-orbits">◯ Orbits</button>
           <button id="btn-orrery">⊙ Orrery</button>
           <button id="btn-gravity">⚛ Gravity</button>
@@ -1234,7 +1095,6 @@ const Index = () => {
             <li><strong>Gravity:</strong> Real Newtonian gravity on ship</li>
             <li><strong>Flight:</strong> Arrows = pitch/yaw · Space = thrust · Shift = brake</li>
             <li><strong>Gears:</strong> Keys 1–4 for thrust levels</li>
-            <li><strong>View:</strong> C = cockpit / chase cam</li>
           </ul>
           <div id="planet-stats" style={{ display:'none', marginTop:'14px' }}>
             <div style={{ borderTop:'1px solid rgba(79,195,247,0.15)', paddingTop:'12px', marginBottom:'8px', fontSize:'0.72rem', color:'#3a6080', letterSpacing:'1px', textTransform:'uppercase' }}>Planetary Data</div>
