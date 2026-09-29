@@ -353,12 +353,20 @@ const Index = () => {
     const astMat = new THREE.MeshStandardMaterial({ color: 0x777777, roughness: 0.95 });
     const astBelt = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(0.1, 0), astMat, 8000);
     const dMat = new THREE.Object3D();
+    const asteroidBodies: { pos: THREE.Vector3; radius: number }[] = [];
+
     for (let i = 0; i < 8000; i++) {
       const dist = 40 + Math.random() * 7; const ang = Math.random() * Math.PI * 2;
-      dMat.position.set(Math.cos(ang)*dist, (Math.random()-0.5)*2, Math.sin(ang)*dist);
+      const x = Math.cos(ang) * dist;
+      const y = (Math.random() - 0.5) * 2;
+      const z = Math.sin(ang) * dist;
+      dMat.position.set(x, y, z);
       dMat.rotation.set(Math.random()*Math.PI, Math.random()*Math.PI, Math.random()*Math.PI);
       const s = Math.random() * 0.8 + 0.2; dMat.scale.set(s,s,s);
       dMat.updateMatrix(); astBelt.setMatrixAt(i, dMat.matrix);
+
+      // Store position and bounding radius for physical collision check
+      asteroidBodies.push({ pos: new THREE.Vector3(x, y, z), radius: 0.1 * s });
     }
     sceneSS.add(astBelt);
 
@@ -428,7 +436,7 @@ const Index = () => {
     let isExploded = false;
     let explosionTimer = 0;
     let cameraShakeIntensity = 0;
-    const EXPLOSION_RESPAWN_DELAY = 4.0;
+    const EXPLOSION_RESPAWN_DELAY = 2.0;
 
     // 1. Dynamic Omnidirectional Flash Light
     const explosionLight = new THREE.PointLight(0xff7711, 0, 200, 0.8);
@@ -669,10 +677,11 @@ const Index = () => {
     let shockwaveOpacity = 0;
 
     function triggerExplosion(impactPoint: THREE.Vector3, impactObjName = 'Space Object', isPlayer = true) {
+      explosionTimer = EXPLOSION_RESPAWN_DELAY;
+
       if (isPlayer) {
         if (isExploded) return;
         isExploded = true;
-        explosionTimer = EXPLOSION_RESPAWN_DELAY;
         cameraShakeIntensity = 1.35;
         playerHealth = 0;
         updateHealthHUD();
@@ -748,7 +757,7 @@ const Index = () => {
           pos: impactPoint.clone().add(new THREE.Vector3((Math.random()-0.5)*0.25, (Math.random()-0.5)*0.25, (Math.random()-0.5)*0.25)),
           vel,
           life: 1.0,
-          maxLife: 2.2 + Math.random() * 1.8,
+          maxLife: 1.0 + Math.random() * 0.9,
           size: 1.2 + Math.random() * 3.0,
           color,
           rotSpeed: (Math.random() - 0.5) * 6
@@ -778,38 +787,46 @@ const Index = () => {
     }
 
     function updateExplosion(dt: number) {
-      if (!isExploded && cameraShakeIntensity <= 0) return;
+      if (explosionTimer <= 0 && cameraShakeIntensity <= 0) {
+        fireballMesh.visible = false;
+        shockwaveMesh.visible = false;
+        shockwaveSphere.visible = false;
+        expPoints.visible = false;
+        debrisGroup.visible = false;
+        explosionLight.intensity = 0;
+        return;
+      }
 
-      if (isExploded) {
+      if (explosionTimer > 0) {
         explosionTimer -= dt;
         const elapsed = EXPLOSION_RESPAWN_DELAY - explosionTimer;
-        const normProgress = Math.min(1.0, elapsed / 3.8);
+        const normProgress = Math.min(1.0, elapsed / 1.95);
 
         // Flash Light Decay
-        explosionLight.intensity = Math.max(0, explosionLight.intensity - dt * 6.0);
+        explosionLight.intensity = Math.max(0, explosionLight.intensity - dt * 12.0);
 
         // 1. Update Volumetric 3D Fireball Mesh
         if (fireballMesh.visible) {
           fireballMat.uniforms.uTime.value += dt;
           fireballMat.uniforms.uProgress.value = normProgress;
-          fireballMesh.rotation.y += dt * 0.8;
-          fireballMesh.rotation.z += dt * 0.5;
-          if (normProgress >= 0.99) fireballMesh.visible = false;
+          fireballMesh.rotation.y += dt * 1.5;
+          fireballMesh.rotation.z += dt * 1.0;
+          if (normProgress >= 0.98) fireballMesh.visible = false;
         }
 
         // 2. Expand Shockwave Ring & Corona Sphere
         if (shockwaveMesh.visible) {
-          shockwaveScale += dt * 12.0;
-          shockwaveOpacity = Math.max(0, shockwaveOpacity - dt * 0.8);
+          shockwaveScale += dt * 24.0;
+          shockwaveOpacity = Math.max(0, shockwaveOpacity - dt * 1.6);
           shockwaveMesh.scale.set(shockwaveScale, shockwaveScale, shockwaveScale);
           shockwaveMat.opacity = shockwaveOpacity;
           if (shockwaveOpacity <= 0) shockwaveMesh.visible = false;
         }
 
         if (shockwaveSphere.visible) {
-          const sphScale = shockwaveSphere.scale.x + dt * 10.0;
+          const sphScale = shockwaveSphere.scale.x + dt * 20.0;
           shockwaveSphere.scale.set(sphScale, sphScale, sphScale);
-          const sphOp = Math.max(0, shockwaveSphereMat.uniforms.opacityVal.value - dt * 0.75);
+          const sphOp = Math.max(0, shockwaveSphereMat.uniforms.opacityVal.value - dt * 1.5);
           shockwaveSphereMat.uniforms.opacityVal.value = sphOp;
           if (sphOp <= 0) shockwaveSphere.visible = false;
         }
@@ -844,11 +861,11 @@ const Index = () => {
         expGeo.attributes.size.needsUpdate = true;
         if (activeParticles === 0) expPoints.visible = false;
 
-        // 4. Update Hull Shards Debris (lasts 4 seconds)
+        // 4. Update Hull Shards Debris (lasts 2 seconds)
         debrisPieces.forEach(dp => {
           if (dp.life > 0) {
-            dp.life -= dt / 4.0;
-            dp.mesh.position.addScaledVector(dp.vel, dt * 22.0);
+            dp.life -= dt / 2.0;
+            dp.mesh.position.addScaledVector(dp.vel, dt * 26.0);
             dp.mesh.rotation.x += dp.rotVel.x * dt;
             dp.mesh.rotation.y += dp.rotVel.y * dt;
             dp.mesh.rotation.z += dp.rotVel.z * dt;
@@ -858,9 +875,17 @@ const Index = () => {
           }
         });
 
-        // Respawn when timer finishes
+        // Hide all elements and respawn when 2.0s timer finishes
         if (explosionTimer <= 0) {
-          respawnShip();
+          fireballMesh.visible = false;
+          shockwaveMesh.visible = false;
+          shockwaveSphere.visible = false;
+          expPoints.visible = false;
+          debrisGroup.visible = false;
+          explosionLight.intensity = 0;
+          if (isExploded) {
+            respawnShip();
+          }
         }
       }
 
@@ -1070,6 +1095,7 @@ const Index = () => {
     interface LaserBolt {
       mesh: THREE.Mesh;
       dir: THREE.Vector3;
+      prevPos: THREE.Vector3;
       speed: number;
       life: number;
       maxLife: number;
@@ -1234,7 +1260,8 @@ const Index = () => {
       laserBolts.push({
         mesh: boltGroup as any,
         dir: direction.clone().normalize(),
-        speed: isPlayer ? 2.2 : 1.4,
+        prevPos: origin.clone(),
+        speed: isPlayer ? 2.6 : 1.5,
         life: 0,
         maxLife: isPlayer ? 1.8 : 2.2,
         isPlayer
@@ -1382,15 +1409,14 @@ const Index = () => {
       enemyShips.forEach(e => sceneSS.remove(e.mesh));
       enemyShips.length = 0;
 
-      // Spawn zones distributed from close combat range (1.2 - 3.5 units ahead of player start at 30,5,0)
-      // to planetary defensive perimeters
+      // Spawn zones safely positioned in defensive planetary orbits
       const spawnZones = [
-        { radius: 29.5, height: 4.8, speed: 0.16, baseAngle: 0.08 },  // Just ahead of player ship!
-        { radius: 31.0, height: 5.6, speed: -0.18, baseAngle: 0.14 }, // Patrol wingman near player
-        { radius: 28.0, height: 4.2, speed: 0.20, baseAngle: 0.22 },  // Escort flank
-        { radius: 34.0, height: -2.0, speed: -0.12, baseAngle: 0.5 },
-        { radius: 38.0, height: 3.5, speed: 0.14, baseAngle: 1.2 },
-        { radius: 43.0, height: -3.0, speed: -0.10, baseAngle: 2.4 }
+        { radius: 38.0, height: 4.8, speed: 0.14, baseAngle: 0.8 },
+        { radius: 44.0, height: -3.5, speed: -0.12, baseAngle: 1.6 },
+        { radius: 52.0, height: 5.2, speed: 0.10, baseAngle: 2.5 },
+        { radius: 58.0, height: -2.0, speed: -0.09, baseAngle: 3.4 },
+        { radius: 64.0, height: 3.5, speed: 0.08, baseAngle: 4.2 },
+        { radius: 72.0, height: -4.0, speed: -0.07, baseAngle: 5.1 }
       ];
 
       for (let i = 0; i < ENEMY_COUNT; i++) {
@@ -1436,8 +1462,7 @@ const Index = () => {
       if (e.code==='ArrowLeft')  keys.left=true;
       if (e.code==='ArrowRight') keys.right=true;
       if (e.code==='KeyA' || e.key==='a' || e.key==='A') { keys.fire=true; }
-      if (e.code==='Space')  { keys.space=true; keys.fire=true; }
-      if (e.code==='KeyF')   keys.fire=true;
+      if (e.code==='Space')  { keys.space=true; }
       if (e.code==='KeyQ')   keys.q=true;
       if (e.code==='KeyE')   keys.e=true;
       if (e.code==='ShiftLeft'||e.code==='ShiftRight') keys.brake=true;
@@ -1453,8 +1478,7 @@ const Index = () => {
       if (e.code==='ArrowLeft')  keys.left=false;
       if (e.code==='ArrowRight') keys.right=false;
       if (e.code==='KeyA' || e.key==='a' || e.key==='A') { keys.fire=false; }
-      if (e.code==='Space')  { keys.space=false; keys.fire=false; }
-      if (e.code==='KeyF')   keys.fire=false;
+      if (e.code==='Space')  { keys.space=false; }
       if (e.code==='KeyQ')   keys.q=false;
       if (e.code==='KeyE')   keys.e=false;
       if (e.code==='ShiftLeft'||e.code==='ShiftRight') keys.brake=false;
@@ -2196,6 +2220,25 @@ const Index = () => {
               const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(playerShip.quaternion);
               const right = new THREE.Vector3(1, 0, 0).applyQuaternion(playerShip.quaternion);
 
+              // Smart Aim-Assist: If crosshair is near an enemy, gimbal laser direction towards target
+              let fireDir = fwd.clone();
+              let bestDot = 0.88;
+              let targetPos: THREE.Vector3 | null = null;
+              enemyShips.forEach(e => {
+                if (!e.active) return;
+                const toE = new THREE.Vector3().subVectors(e.mesh.position, playerShip.position).normalize();
+                const dot = fwd.dot(toE);
+                if (dot > bestDot) {
+                  bestDot = dot;
+                  targetPos = e.mesh.position;
+                }
+              });
+
+              if (targetPos) {
+                const toTarget = new THREE.Vector3().subVectors(targetPos, playerShip.position).normalize();
+                fireDir = fwd.clone().lerp(toTarget, 0.45).normalize();
+              }
+
               // Dual wingtip laser salvos
               const leftNozzle = playerShip.position.clone()
                 .addScaledVector(right, -TARGET_SHIP_SIZE * 0.4)
@@ -2204,8 +2247,8 @@ const Index = () => {
                 .addScaledVector(right, TARGET_SHIP_SIZE * 0.4)
                 .addScaledVector(fwd, TARGET_SHIP_SIZE * 0.5);
 
-              spawnLaserBolt(leftNozzle, fwd, true);
-              spawnLaserBolt(rightNozzle, fwd, true);
+              spawnLaserBolt(leftNozzle, fireDir, true);
+              spawnLaserBolt(rightNozzle, fireDir, true);
 
               // Muzzle Flash Light flash
               muzzleFlashLight.intensity = 2.8;
@@ -2237,25 +2280,24 @@ const Index = () => {
               }
             }
 
-            // 3. Collision with Asteroid Belt (dist from center between 39.5 and 47.5, |y| < 1.2)
+            // 3. Physical 3D Contact Collision with Individual Asteroids
             if (!isExploded) {
               const rXZ = Math.sqrt(shipPos.x * shipPos.x + shipPos.z * shipPos.z);
-              if (rXZ >= 39.5 && rXZ <= 47.5 && Math.abs(shipPos.y) <= 1.2) {
-                // High density asteroid collision probability on flight
-                if (Math.random() < (currentSpeed > 0.005 ? 0.35 : 0.08) * dt * 60) {
-                  triggerExplosion(shipPos.clone(), 'Asteroid Belt Debris', true);
+              if (rXZ >= 39.0 && rXZ <= 48.0 && Math.abs(shipPos.y) <= 1.8) {
+                for (let i = 0; i < asteroidBodies.length; i += 3) {
+                  const ast = asteroidBodies[i];
+                  if (shipPos.distanceTo(ast.pos) < (ast.radius + shipRadius + 0.18)) {
+                    triggerExplosion(shipPos.clone(), 'Asteroid Impact', true);
+                    break;
+                  }
                 }
               }
             }
 
-            // 4. Collision with Kuiper Belt (dist from center between 127 and 149, |y| < 2.5)
-            if (!isExploded) {
-              const rXZ = Math.sqrt(shipPos.x * shipPos.x + shipPos.z * shipPos.z);
-              if (rXZ >= 127 && rXZ <= 149 && Math.abs(shipPos.y) <= 2.5) {
-                if (Math.random() < (currentSpeed > 0.005 ? 0.25 : 0.06) * dt * 60) {
-                  triggerExplosion(shipPos.clone(), 'Kuiper Belt Comet', true);
-                }
-              }
+            // Regenerate Shields when not under fire (+10%/sec)
+            if (!isExploded && playerHealth < PLAYER_MAX_HEALTH) {
+              playerHealth = Math.min(PLAYER_MAX_HEALTH, playerHealth + 10.0 * dt);
+              updateHealthHUD();
             }
           }
 
@@ -2379,21 +2421,25 @@ const Index = () => {
           for (let i = laserBolts.length - 1; i >= 0; i--) {
             const bolt = laserBolts[i];
             bolt.life += dt;
-            bolt.mesh.position.addScaledVector(bolt.dir, bolt.speed * dt * 50);
+            const nextPos = bolt.mesh.position.clone().addScaledVector(bolt.dir, bolt.speed * dt * 50);
+            const sweepLine = new THREE.Line3(bolt.prevPos, nextPos);
+            bolt.mesh.position.copy(nextPos);
 
             let hit = false;
+            const closestPt = new THREE.Vector3();
 
             if (bolt.isPlayer) {
-              // Check hit against active enemies
+              // Check hit against active enemies with generous hitbox (0.75 units)
               for (const enemy of enemyShips) {
                 if (!enemy.active) continue;
-                const d = bolt.mesh.position.distanceTo(enemy.mesh.position);
-                if (d < TARGET_SHIP_SIZE * 2.2) {
+                sweepLine.closestPointToPoint(enemy.mesh.position, true, closestPt);
+                const d = closestPt.distanceTo(enemy.mesh.position);
+                if (d < 0.75) {
                   hit = true;
                   initAudio();
                   audio.playHitImpact();
-                  spawnLaserImpact(bolt.mesh.position.clone(), true);
-                  enemy.health -= 25;
+                  spawnLaserImpact(closestPt.clone(), true);
+                  enemy.health -= 30;
 
                   // Visual damage spark
                   if (enemy.health <= 0) {
@@ -2402,9 +2448,9 @@ const Index = () => {
                     enemiesKilled++;
                     updateCombatStatsHUD();
                     audio.playKillScore();
-                    triggerExplosion(enemy.mesh.position.clone(), 'TIE-Defender', false);
+                    triggerExplosion(enemy.mesh.position.clone(), 'Star Wars Fighter', false);
 
-                    // Respawn enemy after delay to keep the action alive
+                    // Respawn enemy after delay to keep the dogfight intense
                     setTimeout(() => {
                       enemy.health = enemy.maxHealth;
                       enemy.active = true;
@@ -2416,7 +2462,7 @@ const Index = () => {
                         Math.sin(randomAngle) * enemy.orbitRadius
                       );
                       updateCombatStatsHUD();
-                    }, 8000);
+                    }, 7000);
                   }
                   break;
                 }
@@ -2424,14 +2470,15 @@ const Index = () => {
             } else {
               // Enemy laser hitting player
               if (!isExploded) {
-                const d = bolt.mesh.position.distanceTo(playerShip.position);
-                if (d < TARGET_SHIP_SIZE * 1.5) {
+                sweepLine.closestPointToPoint(playerShip.position, true, closestPt);
+                const d = closestPt.distanceTo(playerShip.position);
+                if (d < 0.45) {
                   hit = true;
                   initAudio();
                   audio.playHitImpact();
-                  spawnLaserImpact(bolt.mesh.position.clone(), false);
-                  cameraShakeIntensity = Math.max(cameraShakeIntensity, 0.45);
-                  playerHealth -= 15;
+                  spawnLaserImpact(closestPt.clone(), false);
+                  cameraShakeIntensity = Math.max(cameraShakeIntensity, 0.35);
+                  playerHealth -= 5;
                   updateHealthHUD();
 
                   if (playerHealth <= 0) {
@@ -2440,6 +2487,8 @@ const Index = () => {
                 }
               }
             }
+
+            bolt.prevPos.copy(bolt.mesh.position);
 
             // Remove decayed or collided laser bolts
             if (hit || bolt.life >= bolt.maxLife) {
@@ -2594,8 +2643,8 @@ const Index = () => {
           <h1 id="info-title">Solar System</h1>
           <h2 id="info-subtitle">Interactive Environment</h2>
           <ul className="fact-list" id="info-facts">
-            <li><strong>Combat:</strong> A / Space / Click / F = Fire Lasers · Defend against Imperial TIE Fleet</li>
-            <li><strong>Flight:</strong> Arrows = pitch/yaw · Space = thrust & fire · Shift = brake</li>
+            <li><strong>Combat:</strong> Key A = Fire Lasers · Defend against Imperial TIE Fleet</li>
+            <li><strong>Flight:</strong> Arrows = pitch/yaw · Space = thrust · Shift = brake</li>
             <li><strong>Gears:</strong> Keys 1–4 for speed levels (Cruise, Impulse, Combat, Hyperdrive)</li>
             <li><strong>Health:</strong> Real-time Hull Integrity bar with critical damage warnings</li>
             <li><strong>Explosions:</strong> Volumetric 3D fireball and shrapnel on ship destruction</li>
@@ -2654,7 +2703,7 @@ const Index = () => {
               <span>SCORE: <strong id="combat-kills-text" style={{ color: '#00e5ff' }}>0</strong></span>
             </div>
             <div className="combat-controls-tip">
-              ⚔ SPACE / CLICK / F: CANNONS · 1-4: THRUST
+              ⚔ KEY A: CANNONS · SPACE: THRUST · 1-4: GEARS
             </div>
           </div>
         </div>

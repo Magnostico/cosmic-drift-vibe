@@ -1,6 +1,8 @@
 // ═══════════════════════════════════════════════════════
-//  SPACE AUDIO ENGINE — Web Audio API & Preloaded AudioBuffers
+//  SPACE AUDIO ENGINE — Web Audio API & Embedded Audio
 // ═══════════════════════════════════════════════════════
+
+import { EMBEDDED_ROBLOX_LASER_MP3, EMBEDDED_EXPLOSION_MP3 } from './embeddedAudioData';
 
 export class SpaceAudioEngine {
   private ctx: AudioContext | null = null;
@@ -16,12 +18,33 @@ export class SpaceAudioEngine {
   private started = false;
   private disposed = false;
 
-  // Decoded in-memory audio buffers for zero-latency polyphony
+  // Decoded in-memory audio buffers for zero-latency Web Audio API
   private laserAudioBuffer: AudioBuffer | null = null;
   private explosionAudioBuffer: AudioBuffer | null = null;
 
+  // Fallback Audio elements pool for guaranteed sound under any browser autoplay state
+  private laserAudioElements: HTMLAudioElement[] = [];
+  private explosionAudioElements: HTMLAudioElement[] = [];
+  private laserPoolIdx = 0;
+  private explosionPoolIdx = 0;
+
   constructor() {
-    // Start asynchronous pre-fetching immediately
+    // Create instant HTMLAudioElement pools from embedded base64 data
+    try {
+      this.laserAudioElements = Array.from({ length: 8 }, () => {
+        const a = new Audio(EMBEDDED_ROBLOX_LASER_MP3);
+        a.volume = 0.9;
+        return a;
+      });
+      this.explosionAudioElements = Array.from({ length: 4 }, () => {
+        const a = new Audio(EMBEDDED_EXPLOSION_MP3);
+        a.volume = 0.95;
+        return a;
+      });
+    } catch (e) {
+      console.warn('Audio pool creation notice:', e);
+    }
+
     this.preloadAudioBuffers();
   }
 
@@ -32,7 +55,7 @@ export class SpaceAudioEngine {
         const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
         this.ctx = new AudioCtxClass();
         this.masterGain = this.ctx.createGain();
-        this.masterGain.gain.value = 0.65;
+        this.masterGain.gain.value = 0.8;
         this.masterGain.connect(this.ctx.destination);
       }
 
@@ -51,58 +74,40 @@ export class SpaceAudioEngine {
     }
   }
 
-  private async fetchAndDecode(urls: string[]): Promise<AudioBuffer | null> {
+  private async preloadAudioBuffers() {
     if (!this.ctx) {
       const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
       this.ctx = new AudioCtxClass();
       this.masterGain = this.ctx.createGain();
-      this.masterGain.gain.value = 0.65;
+      this.masterGain.gain.value = 0.8;
       this.masterGain.connect(this.ctx.destination);
     }
 
-    for (const url of urls) {
-      try {
-        const res = await fetch(url);
-        if (res.ok) {
-          const arrayBuf = await res.arrayBuffer();
-          const audioBuf = await this.ctx.decodeAudioData(arrayBuf);
-          return audioBuf;
-        }
-      } catch {
-        // Try next candidate path
-      }
-    }
-    return null;
-  }
+    const ctx = this.ctx;
 
-  private preloadAudioBuffers() {
-    // 1. Pre-fetch and decode roblox-laser-gun.mp3
-    const laserCandidates = [
-      '/sounds/roblox-laser-gun.mp3',
-      '/roblox-laser-gun.mp3',
-      '/models/roblox-laser-gun.mp3',
-      '/audio/roblox-laser-gun.mp3'
-    ];
-    this.fetchAndDecode(laserCandidates).then(buf => {
-      if (buf) {
+    // Decode embedded base64 laser MP3
+    try {
+      const laserRes = await fetch(EMBEDDED_ROBLOX_LASER_MP3);
+      const laserArrayBuf = await laserRes.arrayBuffer();
+      ctx.decodeAudioData(laserArrayBuf.slice(0), (buf) => {
         this.laserAudioBuffer = buf;
-        console.log('✅ Laser audio pre-decoded into memory buffer successfully');
-      }
-    });
+        console.log('✅ Roblox laser sound loaded in memory');
+      });
+    } catch (err) {
+      console.warn('Laser decode error:', err);
+    }
 
-    // 2. Pre-fetch and decode exploded_zfp5Xgm.mp3
-    const explosionCandidates = [
-      '/sounds/exploded_zfp5Xgm.mp3',
-      '/exploded_zfp5Xgm.mp3',
-      '/models/exploded_zfp5Xgm.mp3',
-      '/audio/exploded_zfp5Xgm.mp3'
-    ];
-    this.fetchAndDecode(explosionCandidates).then(buf => {
-      if (buf) {
+    // Decode embedded base64 explosion MP3
+    try {
+      const expRes = await fetch(EMBEDDED_EXPLOSION_MP3);
+      const expArrayBuf = await expRes.arrayBuffer();
+      ctx.decodeAudioData(expArrayBuf.slice(0), (buf) => {
         this.explosionAudioBuffer = buf;
-        console.log('✅ Explosion audio pre-decoded into memory buffer successfully');
-      }
-    });
+        console.log('✅ 4-Second explosion sound loaded in memory');
+      });
+    } catch (err) {
+      console.warn('Explosion decode error:', err);
+    }
   }
 
   /** Direct registration for drag-and-dropped user files */
@@ -112,12 +117,13 @@ export class SpaceAudioEngine {
     try {
       const res = await fetch(blobUrl);
       const arrayBuf = await res.arrayBuffer();
-      const audioBuf = await this.ctx.decodeAudioData(arrayBuf);
-      if (type === 'laser') {
-        this.laserAudioBuffer = audioBuf;
-      } else {
-        this.explosionAudioBuffer = audioBuf;
-      }
+      this.ctx.decodeAudioData(arrayBuf, (audioBuf) => {
+        if (type === 'laser') {
+          this.laserAudioBuffer = audioBuf;
+        } else {
+          this.explosionAudioBuffer = audioBuf;
+        }
+      });
     } catch (err) {
       console.warn('Custom audio decode error:', err);
     }
@@ -136,7 +142,7 @@ export class SpaceAudioEngine {
     if (!this.ctx || !this.masterGain) return;
     const ctx = this.ctx;
     this.ambientGain = ctx.createGain();
-    this.ambientGain.gain.value = 0.06;
+    this.ambientGain.gain.value = 0.05;
     this.ambientGain.connect(this.masterGain);
 
     // Deep space drone
@@ -349,153 +355,131 @@ export class SpaceAudioEngine {
    */
   playExplosion() {
     this.init();
-    if (!this.ctx || !this.masterGain) return;
-    const ctx = this.ctx;
-    const t0 = ctx.currentTime;
 
-    // 1. Play preloaded decoded audio buffer (exploded_zfp5Xgm.mp3) with instant polyphony
-    if (this.explosionAudioBuffer) {
+    // 1. Play HTMLAudioElement instance for instant playback
+    if (this.explosionAudioElements.length > 0) {
       try {
-        const src = ctx.createBufferSource();
-        src.buffer = this.explosionAudioBuffer;
-        const gain = ctx.createGain();
-        gain.gain.value = 1.0;
-        src.connect(gain);
-        gain.connect(this.masterGain);
-        src.start(t0);
+        const a = this.explosionAudioElements[this.explosionPoolIdx % this.explosionAudioElements.length];
+        this.explosionPoolIdx++;
+        a.currentTime = 0;
+        a.play().catch(e => console.debug('Explosion audio playback prevented:', e));
       } catch (err) {
-        console.warn('Explosion buffer playback error:', err);
+        console.debug('Explosion audio error:', err);
       }
     }
 
-    // 2. Layered 4.0-second deep cinematic sub-bass shockwave & rolling debris roar
-    const crackOsc = ctx.createOscillator();
-    crackOsc.type = 'sawtooth';
-    crackOsc.frequency.setValueAtTime(560, t0);
-    crackOsc.frequency.exponentialRampToValueAtTime(25, t0 + 0.18);
-    const crackGain = ctx.createGain();
-    crackGain.gain.setValueAtTime(0.6, t0);
-    crackGain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.22);
-    crackOsc.connect(crackGain);
-    crackGain.connect(this.masterGain);
-    crackOsc.start(t0);
-    crackOsc.stop(t0 + 0.25);
+    // 2. Play Web Audio Buffer
+    if (this.ctx && this.masterGain) {
+      const ctx = this.ctx;
+      const t0 = ctx.currentTime;
 
-    // Deep sub-bass boom (4-second dissipation)
-    const subOsc = ctx.createOscillator();
-    subOsc.type = 'sine';
-    subOsc.frequency.setValueAtTime(140, t0);
-    subOsc.frequency.exponentialRampToValueAtTime(16, t0 + 3.8);
-    const subGain = ctx.createGain();
-    subGain.gain.setValueAtTime(0.85, t0);
-    subGain.gain.exponentialRampToValueAtTime(0.001, t0 + 4.0);
-    subOsc.connect(subGain);
-    subGain.connect(this.masterGain);
-    subOsc.start(t0);
-    subOsc.stop(t0 + 4.1);
+      if (this.explosionAudioBuffer) {
+        try {
+          const src = ctx.createBufferSource();
+          src.buffer = this.explosionAudioBuffer;
+          const gain = ctx.createGain();
+          gain.gain.value = 1.0;
+          src.connect(gain);
+          gain.connect(this.masterGain);
+          src.start(t0);
+        } catch (err) {
+          console.debug('Explosion buffer error:', err);
+        }
+      }
 
-    // Fiery roar & thermal debris noise (4 seconds)
-    const noiseBuf = this.createNoiseBuffer(4.0);
-    const noiseSrc = ctx.createBufferSource();
-    noiseSrc.buffer = noiseBuf;
-    const noiseFilter = ctx.createBiquadFilter();
-    noiseFilter.type = 'lowpass';
-    noiseFilter.frequency.setValueAtTime(1200, t0);
-    noiseFilter.frequency.exponentialRampToValueAtTime(35, t0 + 3.9);
-    const noiseGain = ctx.createGain();
-    noiseGain.gain.setValueAtTime(0.7, t0);
-    noiseGain.gain.exponentialRampToValueAtTime(0.001, t0 + 4.0);
-    noiseSrc.connect(noiseFilter);
-    noiseFilter.connect(noiseGain);
-    noiseGain.connect(this.masterGain);
-    noiseSrc.start(t0);
-    noiseSrc.stop(t0 + 4.1);
+      // 3. Layered 2.0-second deep cinematic sub-bass shockwave
+      const subOsc = ctx.createOscillator();
+      subOsc.type = 'sine';
+      subOsc.frequency.setValueAtTime(140, t0);
+      subOsc.frequency.exponentialRampToValueAtTime(16, t0 + 1.9);
+      const subGain = ctx.createGain();
+      subGain.gain.setValueAtTime(0.8, t0);
+      subGain.gain.exponentialRampToValueAtTime(0.001, t0 + 2.0);
+      subOsc.connect(subGain);
+      subGain.connect(this.masterGain);
+      subOsc.start(t0);
+      subOsc.stop(t0 + 2.1);
+    }
   }
 
   /**
-   * Player Laser Cannon Blast (roblox-laser-gun.mp3 + High-Energy Blaster)
+   * Player Laser Cannon Blast (roblox-laser-gun.mp3)
    */
   playPlayerLaser() {
     this.init();
-    if (!this.ctx || !this.masterGain) return;
-    const ctx = this.ctx;
-    const t0 = ctx.currentTime;
 
-    // 1. Play preloaded decoded audio buffer (roblox-laser-gun.mp3)
-    if (this.laserAudioBuffer) {
+    // 1. Play HTMLAudioElement instance for instant playback
+    if (this.laserAudioElements.length > 0) {
       try {
-        const src = ctx.createBufferSource();
-        src.buffer = this.laserAudioBuffer;
-        const gain = ctx.createGain();
-        gain.gain.value = 0.95;
-        src.connect(gain);
-        gain.connect(this.masterGain);
-        src.start(t0);
+        const a = this.laserAudioElements[this.laserPoolIdx % this.laserAudioElements.length];
+        this.laserPoolIdx++;
+        a.currentTime = 0;
+        a.play().catch(e => console.debug('Laser audio playback prevented:', e));
       } catch (err) {
-        console.warn('Laser buffer playback error:', err);
+        console.debug('Laser audio element error:', err);
       }
     }
 
-    // 2. High-energy laser synth layer
-    const osc = ctx.createOscillator();
-    osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(1400, t0);
-    osc.frequency.exponentialRampToValueAtTime(140, t0 + 0.12);
+    // 2. Play Web Audio Buffer
+    if (this.ctx && this.masterGain) {
+      const ctx = this.ctx;
+      const t0 = ctx.currentTime;
 
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.35, t0);
-    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.13);
-
-    osc.connect(gain);
-    gain.connect(this.masterGain);
-    osc.start(t0);
-    osc.stop(t0 + 0.14);
+      if (this.laserAudioBuffer) {
+        try {
+          const src = ctx.createBufferSource();
+          src.buffer = this.laserAudioBuffer;
+          const gain = ctx.createGain();
+          gain.gain.value = 1.0;
+          src.connect(gain);
+          gain.connect(this.masterGain);
+          src.start(t0);
+        } catch (err) {
+          console.debug('Laser buffer error:', err);
+        }
+      }
+    }
   }
 
   /**
-   * Enemy TIE-Fighter Laser Cannon Blast (roblox-laser-gun.mp3 with Imperial Modulation)
+   * Enemy TIE-Fighter Laser Cannon Blast
    */
   playEnemyLaser() {
     this.init();
-    if (!this.ctx || !this.masterGain) return;
-    const ctx = this.ctx;
-    const t0 = ctx.currentTime;
 
-    // 1. Play preloaded decoded audio buffer modulated for TIE fighter
-    if (this.laserAudioBuffer) {
+    // 1. Play HTMLAudioElement with pitch variation
+    if (this.laserAudioElements.length > 0) {
       try {
-        const src = ctx.createBufferSource();
-        src.buffer = this.laserAudioBuffer;
-        src.playbackRate.value = 0.82 + Math.random() * 0.12;
-        const gain = ctx.createGain();
-        gain.gain.value = 0.65;
-        src.connect(gain);
-        gain.connect(this.masterGain);
-        src.start(t0);
+        const a = this.laserAudioElements[this.laserPoolIdx % this.laserAudioElements.length];
+        this.laserPoolIdx++;
+        a.currentTime = 0;
+        a.playbackRate = 0.85 + Math.random() * 0.15;
+        a.play().catch(e => console.debug('Enemy laser playback prevented:', e));
       } catch (err) {
-        console.warn('Enemy laser buffer error:', err);
+        console.debug('Enemy laser error:', err);
       }
     }
 
-    // 2. Imperial square-wave plasma chirp layer
-    const osc = ctx.createOscillator();
-    osc.type = 'square';
-    osc.frequency.setValueAtTime(720, t0);
-    osc.frequency.exponentialRampToValueAtTime(90, t0 + 0.15);
+    // 2. Play Web Audio Buffer
+    if (this.ctx && this.masterGain) {
+      const ctx = this.ctx;
+      const t0 = ctx.currentTime;
 
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(1600, t0);
-
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.22, t0);
-    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.16);
-
-    osc.connect(filter);
-    filter.connect(gain);
-    gain.connect(this.masterGain);
-    osc.start(t0);
-    osc.stop(t0 + 0.17);
+      if (this.laserAudioBuffer) {
+        try {
+          const src = ctx.createBufferSource();
+          src.buffer = this.laserAudioBuffer;
+          src.playbackRate.value = 0.85 + Math.random() * 0.15;
+          const gain = ctx.createGain();
+          gain.gain.value = 0.7;
+          src.connect(gain);
+          gain.connect(this.masterGain);
+          src.start(t0);
+        } catch (err) {
+          console.debug('Enemy laser buffer error:', err);
+        }
+      }
+    }
   }
 
   /** Shield impact / hull hit deflection */
@@ -552,9 +536,12 @@ export class SpaceAudioEngine {
       this.thrustOsc?.stop();
       this.thrustNoise?.stop();
       this.ctx?.close();
-    } catch {}
+    } catch (err) {
+      console.debug('Audio dispose notice:', err);
+    }
     this.ctx = null;
   }
 }
+
 
 
