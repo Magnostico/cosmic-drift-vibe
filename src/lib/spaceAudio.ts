@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════
-//  PROCEDURAL SPACE AUDIO ENGINE — Web Audio API
+//  SPACE AUDIO ENGINE — Web Audio API & Preloaded AudioBuffers
 // ═══════════════════════════════════════════════════════
 
 export class SpaceAudioEngine {
@@ -13,20 +13,114 @@ export class SpaceAudioEngine {
   private ambientDrone: OscillatorNode | null = null;
   private ambientDrone2: OscillatorNode | null = null;
   private ambientNoise: AudioBufferSourceNode | null = null;
-  private isThrusting = false;
   private started = false;
   private disposed = false;
 
-  init() {
-    if (this.started || this.disposed) return;
-    this.ctx = new AudioContext();
-    this.masterGain = this.ctx.createGain();
-    this.masterGain.gain.value = 0.5;
-    this.masterGain.connect(this.ctx.destination);
+  // Decoded in-memory audio buffers for zero-latency polyphony
+  private laserAudioBuffer: AudioBuffer | null = null;
+  private explosionAudioBuffer: AudioBuffer | null = null;
 
-    this.startAmbient();
-    this.setupThrust();
-    this.started = true;
+  constructor() {
+    // Start asynchronous pre-fetching immediately
+    this.preloadAudioBuffers();
+  }
+
+  init() {
+    if (this.disposed) return;
+    try {
+      if (!this.ctx) {
+        const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
+        this.ctx = new AudioCtxClass();
+        this.masterGain = this.ctx.createGain();
+        this.masterGain.gain.value = 0.65;
+        this.masterGain.connect(this.ctx.destination);
+      }
+
+      if (this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+
+      if (!this.started) {
+        this.startAmbient();
+        this.setupThrust();
+        this.preloadAudioBuffers();
+        this.started = true;
+      }
+    } catch (err) {
+      console.warn('AudioContext init error:', err);
+    }
+  }
+
+  private async fetchAndDecode(urls: string[]): Promise<AudioBuffer | null> {
+    if (!this.ctx) {
+      const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
+      this.ctx = new AudioCtxClass();
+      this.masterGain = this.ctx.createGain();
+      this.masterGain.gain.value = 0.65;
+      this.masterGain.connect(this.ctx.destination);
+    }
+
+    for (const url of urls) {
+      try {
+        const res = await fetch(url);
+        if (res.ok) {
+          const arrayBuf = await res.arrayBuffer();
+          const audioBuf = await this.ctx.decodeAudioData(arrayBuf);
+          return audioBuf;
+        }
+      } catch {
+        // Try next candidate path
+      }
+    }
+    return null;
+  }
+
+  private preloadAudioBuffers() {
+    // 1. Pre-fetch and decode roblox-laser-gun.mp3
+    const laserCandidates = [
+      '/sounds/roblox-laser-gun.mp3',
+      '/roblox-laser-gun.mp3',
+      '/models/roblox-laser-gun.mp3',
+      '/audio/roblox-laser-gun.mp3'
+    ];
+    this.fetchAndDecode(laserCandidates).then(buf => {
+      if (buf) {
+        this.laserAudioBuffer = buf;
+        console.log('✅ Laser audio pre-decoded into memory buffer successfully');
+      }
+    });
+
+    // 2. Pre-fetch and decode exploded_zfp5Xgm.mp3
+    const explosionCandidates = [
+      '/sounds/exploded_zfp5Xgm.mp3',
+      '/exploded_zfp5Xgm.mp3',
+      '/models/exploded_zfp5Xgm.mp3',
+      '/audio/exploded_zfp5Xgm.mp3'
+    ];
+    this.fetchAndDecode(explosionCandidates).then(buf => {
+      if (buf) {
+        this.explosionAudioBuffer = buf;
+        console.log('✅ Explosion audio pre-decoded into memory buffer successfully');
+      }
+    });
+  }
+
+  /** Direct registration for drag-and-dropped user files */
+  async loadCustomAudio(type: 'laser' | 'explosion', blobUrl: string) {
+    this.init();
+    if (!this.ctx) return;
+    try {
+      const res = await fetch(blobUrl);
+      const arrayBuf = await res.arrayBuffer();
+      const audioBuf = await this.ctx.decodeAudioData(arrayBuf);
+      if (type === 'laser') {
+        this.laserAudioBuffer = audioBuf;
+      } else {
+        this.explosionAudioBuffer = audioBuf;
+      }
+    } catch (err) {
+      console.warn('Custom audio decode error:', err);
+    }
   }
 
   private createNoiseBuffer(duration = 2): AudioBuffer {
@@ -39,12 +133,13 @@ export class SpaceAudioEngine {
   }
 
   private startAmbient() {
-    const ctx = this.ctx!;
+    if (!this.ctx || !this.masterGain) return;
+    const ctx = this.ctx;
     this.ambientGain = ctx.createGain();
     this.ambientGain.gain.value = 0.06;
-    this.ambientGain.connect(this.masterGain!);
+    this.ambientGain.connect(this.masterGain);
 
-    // Deep space drone — layered oscillators
+    // Deep space drone
     this.ambientDrone = ctx.createOscillator();
     this.ambientDrone.type = 'sine';
     this.ambientDrone.frequency.value = 38;
@@ -64,7 +159,7 @@ export class SpaceAudioEngine {
     g2.connect(this.ambientGain);
     this.ambientDrone2.start();
 
-    // Subtle filtered noise for "cosmic wind"
+    // Cosmic background wind
     const noiseBuf = this.createNoiseBuffer(4);
     this.ambientNoise = ctx.createBufferSource();
     this.ambientNoise.buffer = noiseBuf;
@@ -82,10 +177,11 @@ export class SpaceAudioEngine {
   }
 
   private setupThrust() {
-    const ctx = this.ctx!;
+    if (!this.ctx || !this.masterGain) return;
+    const ctx = this.ctx;
     this.thrustGain = ctx.createGain();
     this.thrustGain.gain.value = 0;
-    this.thrustGain.connect(this.masterGain!);
+    this.thrustGain.connect(this.masterGain);
 
     // Engine rumble oscillator
     this.thrustOsc = ctx.createOscillator();
@@ -128,6 +224,7 @@ export class SpaceAudioEngine {
 
   /** Gear change — short frequency sweep */
   playGearShift(gearLevel: number) {
+    this.init();
     if (!this.ctx || !this.masterGain) return;
     const ctx = this.ctx;
     const osc = ctx.createOscillator();
@@ -144,6 +241,7 @@ export class SpaceAudioEngine {
 
   /** Transition whoosh — noise sweep */
   playTransition() {
+    this.init();
     if (!this.ctx || !this.masterGain) return;
     const ctx = this.ctx;
     const buf = this.createNoiseBuffer(1.5);
@@ -168,6 +266,7 @@ export class SpaceAudioEngine {
 
   /** Planet click — tonal ping */
   playPlanetClick() {
+    this.init();
     if (!this.ctx || !this.masterGain) return;
     const ctx = this.ctx;
     const osc = ctx.createOscillator();
@@ -191,6 +290,7 @@ export class SpaceAudioEngine {
 
   /** UI button click — subtle tick */
   playUIClick() {
+    this.init();
     if (!this.ctx || !this.masterGain) return;
     const ctx = this.ctx;
     const osc = ctx.createOscillator();
@@ -207,6 +307,7 @@ export class SpaceAudioEngine {
 
   /** Toggle mode sound — ascending/descending */
   playToggle(on: boolean) {
+    this.init();
     if (!this.ctx || !this.masterGain) return;
     const ctx = this.ctx;
     const osc = ctx.createOscillator();
@@ -224,6 +325,7 @@ export class SpaceAudioEngine {
 
   /** Brake sound — low rumble */
   playBrake() {
+    this.init();
     if (!this.ctx || !this.masterGain) return;
     const ctx = this.ctx;
     const osc = ctx.createOscillator();
@@ -242,126 +344,185 @@ export class SpaceAudioEngine {
     osc.stop(ctx.currentTime + 0.35);
   }
 
-  /** Cinematic heavy explosion sound synthesis */
+  /**
+   * 4-Second Heavy Cinematic Explosion for Player and Enemy Ships
+   */
   playExplosion() {
+    this.init();
     if (!this.ctx || !this.masterGain) return;
     const ctx = this.ctx;
     const t0 = ctx.currentTime;
 
-    // 1. Initial supersonic crack / transient (sharp burst)
+    // 1. Play preloaded decoded audio buffer (exploded_zfp5Xgm.mp3) with instant polyphony
+    if (this.explosionAudioBuffer) {
+      try {
+        const src = ctx.createBufferSource();
+        src.buffer = this.explosionAudioBuffer;
+        const gain = ctx.createGain();
+        gain.gain.value = 1.0;
+        src.connect(gain);
+        gain.connect(this.masterGain);
+        src.start(t0);
+      } catch (err) {
+        console.warn('Explosion buffer playback error:', err);
+      }
+    }
+
+    // 2. Layered 4.0-second deep cinematic sub-bass shockwave & rolling debris roar
     const crackOsc = ctx.createOscillator();
     crackOsc.type = 'sawtooth';
-    crackOsc.frequency.setValueAtTime(450, t0);
-    crackOsc.frequency.exponentialRampToValueAtTime(30, t0 + 0.12);
+    crackOsc.frequency.setValueAtTime(560, t0);
+    crackOsc.frequency.exponentialRampToValueAtTime(25, t0 + 0.18);
     const crackGain = ctx.createGain();
-    crackGain.gain.setValueAtTime(0.4, t0);
-    crackGain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.15);
+    crackGain.gain.setValueAtTime(0.6, t0);
+    crackGain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.22);
     crackOsc.connect(crackGain);
     crackGain.connect(this.masterGain);
     crackOsc.start(t0);
-    crackOsc.stop(t0 + 0.16);
+    crackOsc.stop(t0 + 0.25);
 
-    // 2. Deep sub-bass boom (hull disintegration shockwave)
+    // Deep sub-bass boom (4-second dissipation)
     const subOsc = ctx.createOscillator();
     subOsc.type = 'sine';
-    subOsc.frequency.setValueAtTime(120, t0);
-    subOsc.frequency.exponentialRampToValueAtTime(25, t0 + 1.2);
+    subOsc.frequency.setValueAtTime(140, t0);
+    subOsc.frequency.exponentialRampToValueAtTime(16, t0 + 3.8);
     const subGain = ctx.createGain();
-    subGain.gain.setValueAtTime(0.6, t0);
-    subGain.gain.exponentialRampToValueAtTime(0.001, t0 + 1.4);
+    subGain.gain.setValueAtTime(0.85, t0);
+    subGain.gain.exponentialRampToValueAtTime(0.001, t0 + 4.0);
     subOsc.connect(subGain);
     subGain.connect(this.masterGain);
     subOsc.start(t0);
-    subOsc.stop(t0 + 1.45);
+    subOsc.stop(t0 + 4.1);
 
-    // 3. Fiery roar & thermal debris noise (decaying rumble)
-    const noiseBuf = this.createNoiseBuffer(2.5);
+    // Fiery roar & thermal debris noise (4 seconds)
+    const noiseBuf = this.createNoiseBuffer(4.0);
     const noiseSrc = ctx.createBufferSource();
     noiseSrc.buffer = noiseBuf;
     const noiseFilter = ctx.createBiquadFilter();
     noiseFilter.type = 'lowpass';
-    noiseFilter.frequency.setValueAtTime(800, t0);
-    noiseFilter.frequency.exponentialRampToValueAtTime(60, t0 + 2.0);
+    noiseFilter.frequency.setValueAtTime(1200, t0);
+    noiseFilter.frequency.exponentialRampToValueAtTime(35, t0 + 3.9);
     const noiseGain = ctx.createGain();
-    noiseGain.gain.setValueAtTime(0.5, t0);
-    noiseGain.gain.exponentialRampToValueAtTime(0.001, t0 + 2.2);
+    noiseGain.gain.setValueAtTime(0.7, t0);
+    noiseGain.gain.exponentialRampToValueAtTime(0.001, t0 + 4.0);
     noiseSrc.connect(noiseFilter);
     noiseFilter.connect(noiseGain);
     noiseGain.connect(this.masterGain);
     noiseSrc.start(t0);
-    noiseSrc.stop(t0 + 2.3);
+    noiseSrc.stop(t0 + 4.1);
   }
 
-  /** Player high-frequency dual laser cannon blast */
+  /**
+   * Player Laser Cannon Blast (roblox-laser-gun.mp3 + High-Energy Blaster)
+   */
   playPlayerLaser() {
+    this.init();
     if (!this.ctx || !this.masterGain) return;
     const ctx = this.ctx;
     const t0 = ctx.currentTime;
 
+    // 1. Play preloaded decoded audio buffer (roblox-laser-gun.mp3)
+    if (this.laserAudioBuffer) {
+      try {
+        const src = ctx.createBufferSource();
+        src.buffer = this.laserAudioBuffer;
+        const gain = ctx.createGain();
+        gain.gain.value = 0.95;
+        src.connect(gain);
+        gain.connect(this.masterGain);
+        src.start(t0);
+      } catch (err) {
+        console.warn('Laser buffer playback error:', err);
+      }
+    }
+
+    // 2. High-energy laser synth layer
     const osc = ctx.createOscillator();
     osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(880, t0);
-    osc.frequency.exponentialRampToValueAtTime(140, t0 + 0.11);
+    osc.frequency.setValueAtTime(1400, t0);
+    osc.frequency.exponentialRampToValueAtTime(140, t0 + 0.12);
 
     const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.22, t0);
-    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.12);
+    gain.gain.setValueAtTime(0.35, t0);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.13);
 
     osc.connect(gain);
     gain.connect(this.masterGain);
     osc.start(t0);
-    osc.stop(t0 + 0.13);
+    osc.stop(t0 + 0.14);
   }
 
-  /** Enemy TIE-style green plasma cannon blast */
+  /**
+   * Enemy TIE-Fighter Laser Cannon Blast (roblox-laser-gun.mp3 with Imperial Modulation)
+   */
   playEnemyLaser() {
+    this.init();
     if (!this.ctx || !this.masterGain) return;
     const ctx = this.ctx;
     const t0 = ctx.currentTime;
 
+    // 1. Play preloaded decoded audio buffer modulated for TIE fighter
+    if (this.laserAudioBuffer) {
+      try {
+        const src = ctx.createBufferSource();
+        src.buffer = this.laserAudioBuffer;
+        src.playbackRate.value = 0.82 + Math.random() * 0.12;
+        const gain = ctx.createGain();
+        gain.gain.value = 0.65;
+        src.connect(gain);
+        gain.connect(this.masterGain);
+        src.start(t0);
+      } catch (err) {
+        console.warn('Enemy laser buffer error:', err);
+      }
+    }
+
+    // 2. Imperial square-wave plasma chirp layer
     const osc = ctx.createOscillator();
     osc.type = 'square';
-    osc.frequency.setValueAtTime(520, t0);
-    osc.frequency.exponentialRampToValueAtTime(90, t0 + 0.14);
+    osc.frequency.setValueAtTime(720, t0);
+    osc.frequency.exponentialRampToValueAtTime(90, t0 + 0.15);
 
     const filter = ctx.createBiquadFilter();
     filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(1200, t0);
+    filter.frequency.setValueAtTime(1600, t0);
 
     const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.12, t0);
-    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.15);
+    gain.gain.setValueAtTime(0.22, t0);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.16);
 
     osc.connect(filter);
     filter.connect(gain);
     gain.connect(this.masterGain);
     osc.start(t0);
-    osc.stop(t0 + 0.16);
+    osc.stop(t0 + 0.17);
   }
 
   /** Shield impact / hull hit deflection */
   playHitImpact() {
+    this.init();
     if (!this.ctx || !this.masterGain) return;
     const ctx = this.ctx;
     const t0 = ctx.currentTime;
 
     const osc = ctx.createOscillator();
     osc.type = 'triangle';
-    osc.frequency.setValueAtTime(260, t0);
-    osc.frequency.exponentialRampToValueAtTime(60, t0 + 0.15);
+    osc.frequency.setValueAtTime(320, t0);
+    osc.frequency.exponentialRampToValueAtTime(50, t0 + 0.18);
 
     const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.3, t0);
-    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.18);
+    gain.gain.setValueAtTime(0.4, t0);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.2);
 
     osc.connect(gain);
     gain.connect(this.masterGain);
     osc.start(t0);
-    osc.stop(t0 + 0.2);
+    osc.stop(t0 + 0.22);
   }
 
   /** Target defeated / destroyed chime */
   playKillScore() {
+    this.init();
     if (!this.ctx || !this.masterGain) return;
     const ctx = this.ctx;
     const t0 = ctx.currentTime;
@@ -372,13 +533,13 @@ export class SpaceAudioEngine {
       osc.frequency.setValueAtTime(freq, t0 + idx * 0.05);
 
       const gain = ctx.createGain();
-      gain.gain.setValueAtTime(0.12, t0 + idx * 0.05);
-      gain.gain.exponentialRampToValueAtTime(0.001, t0 + idx * 0.05 + 0.2);
+      gain.gain.setValueAtTime(0.18, t0 + idx * 0.05);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + idx * 0.05 + 0.25);
 
       osc.connect(gain);
       gain.connect(this.masterGain!);
       osc.start(t0 + idx * 0.05);
-      osc.stop(t0 + idx * 0.05 + 0.22);
+      osc.stop(t0 + idx * 0.05 + 0.27);
     });
   }
 
@@ -395,3 +556,5 @@ export class SpaceAudioEngine {
     this.ctx = null;
   }
 }
+
+

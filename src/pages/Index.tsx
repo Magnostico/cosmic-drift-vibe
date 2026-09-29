@@ -428,7 +428,7 @@ const Index = () => {
     let isExploded = false;
     let explosionTimer = 0;
     let cameraShakeIntensity = 0;
-    const EXPLOSION_RESPAWN_DELAY = 2.8;
+    const EXPLOSION_RESPAWN_DELAY = 4.0;
 
     // 1. Dynamic Omnidirectional Flash Light
     const explosionLight = new THREE.PointLight(0xff7711, 0, 200, 0.8);
@@ -748,8 +748,8 @@ const Index = () => {
           pos: impactPoint.clone().add(new THREE.Vector3((Math.random()-0.5)*0.25, (Math.random()-0.5)*0.25, (Math.random()-0.5)*0.25)),
           vel,
           life: 1.0,
-          maxLife: 0.9 + Math.random() * 1.5,
-          size: 1.0 + Math.random() * 2.4,
+          maxLife: 2.2 + Math.random() * 1.8,
+          size: 1.2 + Math.random() * 3.0,
           color,
           rotSpeed: (Math.random() - 0.5) * 6
         });
@@ -761,7 +761,7 @@ const Index = () => {
       debrisPieces.forEach(dp => {
         dp.mesh.position.copy(impactPoint);
         dp.mesh.visible = true;
-        const speed = (isPlayer ? 0.12 : 0.09) + Math.random() * 0.45;
+        const speed = (isPlayer ? 0.14 : 0.10) + Math.random() * 0.40;
         dp.vel.set(
           (Math.random() - 0.5) * 2,
           (Math.random() - 0.5) * 2,
@@ -773,7 +773,7 @@ const Index = () => {
           (Math.random() - 0.5) * 20
         );
         dp.life = 1.0;
-        (dp.mesh.material as THREE.MeshStandardMaterial).emissiveIntensity = 2.0;
+        (dp.mesh.material as THREE.MeshStandardMaterial).emissiveIntensity = 2.5;
       });
     }
 
@@ -783,10 +783,10 @@ const Index = () => {
       if (isExploded) {
         explosionTimer -= dt;
         const elapsed = EXPLOSION_RESPAWN_DELAY - explosionTimer;
-        const normProgress = Math.min(1.0, elapsed / 2.0);
+        const normProgress = Math.min(1.0, elapsed / 3.8);
 
         // Flash Light Decay
-        explosionLight.intensity = Math.max(0, explosionLight.intensity - dt * 11.0);
+        explosionLight.intensity = Math.max(0, explosionLight.intensity - dt * 6.0);
 
         // 1. Update Volumetric 3D Fireball Mesh
         if (fireballMesh.visible) {
@@ -799,17 +799,17 @@ const Index = () => {
 
         // 2. Expand Shockwave Ring & Corona Sphere
         if (shockwaveMesh.visible) {
-          shockwaveScale += dt * 18.0;
-          shockwaveOpacity = Math.max(0, shockwaveOpacity - dt * 1.6);
+          shockwaveScale += dt * 12.0;
+          shockwaveOpacity = Math.max(0, shockwaveOpacity - dt * 0.8);
           shockwaveMesh.scale.set(shockwaveScale, shockwaveScale, shockwaveScale);
           shockwaveMat.opacity = shockwaveOpacity;
           if (shockwaveOpacity <= 0) shockwaveMesh.visible = false;
         }
 
         if (shockwaveSphere.visible) {
-          const sphScale = shockwaveSphere.scale.x + dt * 14.0;
+          const sphScale = shockwaveSphere.scale.x + dt * 10.0;
           shockwaveSphere.scale.set(sphScale, sphScale, sphScale);
-          const sphOp = Math.max(0, shockwaveSphereMat.uniforms.opacityVal.value - dt * 1.4);
+          const sphOp = Math.max(0, shockwaveSphereMat.uniforms.opacityVal.value - dt * 0.75);
           shockwaveSphereMat.uniforms.opacityVal.value = sphOp;
           if (sphOp <= 0) shockwaveSphere.visible = false;
         }
@@ -820,20 +820,20 @@ const Index = () => {
           const p = expParticles[i];
           if (p.life > 0) {
             p.life -= dt / p.maxLife;
-            p.pos.addScaledVector(p.vel, dt * 28.0);
-            p.vel.multiplyScalar(Math.pow(0.85, dt * 60)); // air/space drag in expanding cloud
+            p.pos.addScaledVector(p.vel, dt * 20.0);
+            p.vel.multiplyScalar(Math.pow(0.90, dt * 60)); // air/space drag in expanding cloud
             const t = Math.max(0, p.life);
 
             expPos[i * 3] = p.pos.x;
             expPos[i * 3 + 1] = p.pos.y;
             expPos[i * 3 + 2] = p.pos.z;
 
-            expSizes[i] = p.size * t * (1.0 + (1.0 - t) * 1.8);
+            expSizes[i] = p.size * t * (1.0 + (1.0 - t) * 2.2);
 
             // Transition: Pure Incandescent White -> Radiant Yellow -> Red-Orange -> Dark Charcoal Ash
-            expCol[i * 3] = p.color.r * (t > 0.3 ? 1.0 : t * 3.0);
-            expCol[i * 3 + 1] = p.color.g * (t > 0.6 ? 1.0 : (t > 0.2 ? t * 1.6 : 0));
-            expCol[i * 3 + 2] = p.color.b * (t > 0.8 ? 1.0 : (t > 0.4 ? t * 0.8 : 0));
+            expCol[i * 3] = p.color.r * (t > 0.25 ? 1.0 : t * 4.0);
+            expCol[i * 3 + 1] = p.color.g * (t > 0.5 ? 1.0 : (t > 0.15 ? t * 2.0 : 0));
+            expCol[i * 3 + 2] = p.color.b * (t > 0.75 ? 1.0 : (t > 0.35 ? t * 1.0 : 0));
             activeParticles++;
           } else {
             expSizes[i] = 0;
@@ -844,16 +844,16 @@ const Index = () => {
         expGeo.attributes.size.needsUpdate = true;
         if (activeParticles === 0) expPoints.visible = false;
 
-        // 4. Update Hull Shards Debris
+        // 4. Update Hull Shards Debris (lasts 4 seconds)
         debrisPieces.forEach(dp => {
           if (dp.life > 0) {
-            dp.life -= dt / 2.3;
-            dp.mesh.position.addScaledVector(dp.vel, dt * 28.0);
+            dp.life -= dt / 4.0;
+            dp.mesh.position.addScaledVector(dp.vel, dt * 22.0);
             dp.mesh.rotation.x += dp.rotVel.x * dt;
             dp.mesh.rotation.y += dp.rotVel.y * dt;
             dp.mesh.rotation.z += dp.rotVel.z * dt;
             const mat = dp.mesh.material as THREE.MeshStandardMaterial;
-            mat.emissiveIntensity = Math.max(0, dp.life * 2.0);
+            mat.emissiveIntensity = Math.max(0, dp.life * 2.5);
             if (dp.life <= 0) dp.mesh.visible = false;
           }
         });
@@ -1090,23 +1090,130 @@ const Index = () => {
       orbitHeight: number;
     }
 
+    // ── HIGH-ENERGY LASER CANNON SYSTEM & IMPACT PARTICLES ──
     const laserBolts: LaserBolt[] = [];
-    const MAX_LASERS = 120;
-    const playerLaserGeo = new THREE.CylinderGeometry(0.003, 0.003, 0.12, 6);
-    playerLaserGeo.rotateX(Math.PI / 2);
-    const playerLaserMat = new THREE.MeshBasicMaterial({
-      color: 0x00f0ff,
+    const MAX_LASERS = 140;
+
+    // Player Neon Cyan Plasma & Glowing Core
+    const playerLaserCoreGeo = new THREE.CylinderGeometry(0.0022, 0.0022, 0.18, 8);
+    playerLaserCoreGeo.rotateX(Math.PI / 2);
+    const playerLaserCoreMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+
+    const playerLaserHaloGeo = new THREE.CylinderGeometry(0.0065, 0.0065, 0.22, 8);
+    playerLaserHaloGeo.rotateX(Math.PI / 2);
+    const playerLaserHaloMat = new THREE.MeshBasicMaterial({
+      color: 0x00e5ff,
       transparent: true,
-      opacity: 0.95
+      opacity: 0.85,
+      blending: THREE.AdditiveBlending
     });
 
-    const enemyLaserGeo = new THREE.CylinderGeometry(0.0035, 0.0035, 0.14, 6);
-    enemyLaserGeo.rotateX(Math.PI / 2);
-    const enemyLaserMat = new THREE.MeshBasicMaterial({
-      color: 0x00ff44,
+    // Enemy Green Plasma Cannon
+    const enemyLaserCoreGeo = new THREE.CylinderGeometry(0.0025, 0.0025, 0.20, 8);
+    enemyLaserCoreGeo.rotateX(Math.PI / 2);
+    const enemyLaserCoreMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+
+    const enemyLaserHaloGeo = new THREE.CylinderGeometry(0.0075, 0.0075, 0.24, 8);
+    enemyLaserHaloGeo.rotateX(Math.PI / 2);
+    const enemyLaserHaloMat = new THREE.MeshBasicMaterial({
+      color: 0x00ff66,
       transparent: true,
-      opacity: 0.95
+      opacity: 0.85,
+      blending: THREE.AdditiveBlending
     });
+
+    // Muzzle Flash Dynamic Light
+    const muzzleFlashLight = new THREE.PointLight(0x00e5ff, 0, 15, 2.0);
+    playerShip.add(muzzleFlashLight);
+
+    // Laser Impact Plasma Sparks System (150 particles pool)
+    const IMPACT_MAX = 150;
+    interface ImpactSpark {
+      pos: THREE.Vector3;
+      vel: THREE.Vector3;
+      life: number;
+      maxLife: number;
+      size: number;
+      color: THREE.Color;
+    }
+    const impactSparks: ImpactSpark[] = [];
+    const impactGeo = new THREE.BufferGeometry();
+    const impactPos = new Float32Array(IMPACT_MAX * 3);
+    const impactCol = new Float32Array(IMPACT_MAX * 3);
+    const impactSizes = new Float32Array(IMPACT_MAX);
+    impactGeo.setAttribute('position', new THREE.BufferAttribute(impactPos, 3));
+    impactGeo.setAttribute('color', new THREE.BufferAttribute(impactCol, 3));
+    impactGeo.setAttribute('size', new THREE.BufferAttribute(impactSizes, 1));
+
+    const impactMat = new THREE.PointsMaterial({
+      size: 0.08,
+      vertexColors: true,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      sizeAttenuation: true
+    });
+    const impactPoints = new THREE.Points(impactGeo, impactMat);
+    sceneSS.add(impactPoints);
+
+    function spawnLaserImpact(hitPos: THREE.Vector3, isPlayer = true) {
+      const sparkColor = isPlayer ? new THREE.Color(0x00f0ff) : new THREE.Color(0xff5522);
+      const sparkCount = 14;
+
+      for (let i = 0; i < sparkCount; i++) {
+        const vel = new THREE.Vector3(
+          (Math.random() - 0.5) * 2,
+          (Math.random() - 0.5) * 2,
+          (Math.random() - 0.5) * 2
+        ).normalize().multiplyScalar(0.08 + Math.random() * 0.22);
+
+        if (impactSparks.length < IMPACT_MAX) {
+          impactSparks.push({
+            pos: hitPos.clone(),
+            vel,
+            life: 1.0,
+            maxLife: 0.25 + Math.random() * 0.35,
+            size: 0.8 + Math.random() * 1.5,
+            color: sparkColor.clone().lerp(new THREE.Color(0xffffff), Math.random() * 0.6)
+          });
+        } else {
+          // Recycle oldest
+          const sp = impactSparks[Math.floor(Math.random() * impactSparks.length)];
+          sp.pos.copy(hitPos);
+          sp.vel.copy(vel);
+          sp.life = 1.0;
+          sp.maxLife = 0.25 + Math.random() * 0.35;
+        }
+      }
+    }
+
+    function updateLaserImpacts(dt: number) {
+      for (let i = 0; i < IMPACT_MAX; i++) {
+        if (i < impactSparks.length) {
+          const sp = impactSparks[i];
+          if (sp.life > 0) {
+            sp.life -= dt / sp.maxLife;
+            sp.pos.addScaledVector(sp.vel, dt * 35.0);
+            sp.vel.multiplyScalar(Math.pow(0.85, dt * 60));
+            const t = Math.max(0, sp.life);
+            impactPos[i * 3] = sp.pos.x;
+            impactPos[i * 3 + 1] = sp.pos.y;
+            impactPos[i * 3 + 2] = sp.pos.z;
+            impactSizes[i] = sp.size * t * 0.05;
+            impactCol[i * 3] = sp.color.r * t;
+            impactCol[i * 3 + 1] = sp.color.g * t;
+            impactCol[i * 3 + 2] = sp.color.b * t;
+          } else {
+            impactSizes[i] = 0;
+          }
+        } else {
+          impactSizes[i] = 0;
+        }
+      }
+      impactGeo.attributes.position.needsUpdate = true;
+      impactGeo.attributes.color.needsUpdate = true;
+      impactGeo.attributes.size.needsUpdate = true;
+    }
 
     function spawnLaserBolt(origin: THREE.Vector3, direction: THREE.Vector3, isPlayer = true) {
       if (laserBolts.length >= MAX_LASERS) {
@@ -1114,17 +1221,22 @@ const Index = () => {
         if (old) sceneSS.remove(old.mesh);
       }
 
-      const boltMesh = new THREE.Mesh(isPlayer ? playerLaserGeo : enemyLaserGeo, isPlayer ? playerLaserMat : enemyLaserMat);
-      boltMesh.position.copy(origin);
-      boltMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), direction.clone().normalize());
+      const boltGroup = new THREE.Group();
+      const coreMesh = new THREE.Mesh(isPlayer ? playerLaserCoreGeo : enemyLaserCoreGeo, isPlayer ? playerLaserCoreMat : enemyLaserCoreMat);
+      const haloMesh = new THREE.Mesh(isPlayer ? playerLaserHaloGeo : enemyLaserHaloGeo, isPlayer ? playerLaserHaloMat : enemyLaserHaloMat);
+      boltGroup.add(coreMesh);
+      boltGroup.add(haloMesh);
 
-      sceneSS.add(boltMesh);
+      boltGroup.position.copy(origin);
+      boltGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), direction.clone().normalize());
+
+      sceneSS.add(boltGroup);
       laserBolts.push({
-        mesh: boltMesh,
+        mesh: boltGroup as any,
         dir: direction.clone().normalize(),
-        speed: isPlayer ? 1.8 : 1.2,
+        speed: isPlayer ? 2.2 : 1.4,
         life: 0,
-        maxLife: isPlayer ? 1.6 : 2.0,
+        maxLife: isPlayer ? 1.8 : 2.2,
         isPlayer
       });
     }
@@ -1317,11 +1429,13 @@ const Index = () => {
     //  EVENTS
     // ════════════════════════════════════════════════════════════
     const onKeyDown = (e: KeyboardEvent) => {
+      initAudio();
       if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
       if (e.code==='ArrowUp')    keys.up=true;
       if (e.code==='ArrowDown')  keys.down=true;
       if (e.code==='ArrowLeft')  keys.left=true;
       if (e.code==='ArrowRight') keys.right=true;
+      if (e.code==='KeyA' || e.key==='a' || e.key==='A') { keys.fire=true; }
       if (e.code==='Space')  { keys.space=true; keys.fire=true; }
       if (e.code==='KeyF')   keys.fire=true;
       if (e.code==='KeyQ')   keys.q=true;
@@ -1338,6 +1452,7 @@ const Index = () => {
       if (e.code==='ArrowDown')  keys.down=false;
       if (e.code==='ArrowLeft')  keys.left=false;
       if (e.code==='ArrowRight') keys.right=false;
+      if (e.code==='KeyA' || e.key==='a' || e.key==='A') { keys.fire=false; }
       if (e.code==='Space')  { keys.space=false; keys.fire=false; }
       if (e.code==='KeyF')   keys.fire=false;
       if (e.code==='KeyQ')   keys.q=false;
@@ -1346,6 +1461,7 @@ const Index = () => {
     };
 
     const onMouseDown = (e: MouseEvent) => {
+      initAudio();
       if (flightModeActive && e.button === 0 && !(e.target as HTMLElement).closest('button')) {
         keys.fire = true;
       }
@@ -1355,10 +1471,16 @@ const Index = () => {
       keys.fire = false;
     };
 
+    const unlockAudioHandler = () => {
+      initAudio();
+    };
+
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('mousedown', onMouseDown);
     window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('pointerdown', unlockAudioHandler);
+    window.addEventListener('touchstart', unlockAudioHandler);
 
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
@@ -1566,7 +1688,7 @@ const Index = () => {
         camera.position.copy(off);
         updateHealthHUD();
         updateCombatStatsHUD();
-        showToast("SPACE COMBAT ENGAGED ── CLICK / SPACE / F TO FIRE · 1-4 SPEED");
+        showToast("SPACE COMBAT ENGAGED ── A / SPACE / CLICK / F TO FIRE · 1-4 SPEED");
       } else {
         document.getElementById('btn-flight-mode')!.innerText = '🚀 Pilot Ship';
         document.getElementById('btn-flight-mode')!.className = 'btn-success';
@@ -1723,26 +1845,45 @@ const Index = () => {
     }
     tryLoadStarWarsCandidates(0);
 
-    // ── DRAG & DROP 3D FILE ANYWHERE ONTO WINDOW (OPTIONAL USER CONVENIENCE) ──
+    // ── DRAG & DROP 3D / AUDIO FILES DIRECTLY ONTO WINDOW ──
     window.addEventListener('dragover', (e) => {
       e.preventDefault();
     });
 
     window.addEventListener('drop', (e) => {
       e.preventDefault();
+      initAudio();
       const files = Array.from(e.dataTransfer?.files || []);
-      const glbFile = files.find(f => f.name.endsWith('.glb') || f.name.endsWith('.gltf'));
-      if (!glbFile) return;
 
-      const blobUrl = URL.createObjectURL(glbFile);
-      gltfLoader.load(blobUrl, (gltf) => {
-        applyEnemyModel(gltf.scene, glbFile.name);
-        showToast(`✨ Modelo Star Wars carregado: ${glbFile.name}`);
-        URL.revokeObjectURL(blobUrl);
-      }, undefined, (err) => {
-        console.error('Failed to parse dropped 3D model:', err);
-        showToast('❌ Erro ao carregar arquivo 3D arrastado');
-      });
+      // Check audio files (.mp3, .wav, .ogg)
+      const audioFile = files.find(f => /\.(mp3|wav|ogg)$/i.test(f.name));
+      if (audioFile) {
+        const blobUrl = URL.createObjectURL(audioFile);
+        const isLaser = /laser|gun|shot|roblox|fire|pew/i.test(audioFile.name);
+        if (isLaser) {
+          audio.loadCustomAudio('laser', blobUrl);
+          audio.playPlayerLaser();
+          showToast(`🔫 Som de laser carregado: ${audioFile.name}`);
+        } else {
+          audio.loadCustomAudio('explosion', blobUrl);
+          audio.playExplosion();
+          showToast(`💥 Som de explosão carregado: ${audioFile.name}`);
+        }
+      }
+
+      // Check 3D models (.glb, .gltf)
+      const glbFile = files.find(f => f.name.endsWith('.glb') || f.name.endsWith('.gltf'));
+      if (glbFile) {
+        const blobUrl = URL.createObjectURL(glbFile);
+        gltfLoader.load(blobUrl, (gltf) => {
+          applyEnemyModel(gltf.scene, glbFile.name);
+          showToast(`✨ Modelo Star Wars carregado: ${glbFile.name}`);
+          URL.revokeObjectURL(blobUrl);
+        }, undefined, (err) => {
+          console.error('Failed to parse dropped 3D model:', err);
+          showToast('❌ Erro ao carregar arquivo 3D arrastado');
+        });
+      }
     });
 
     // ── GOOGLE ARTS & CULTURE CELESTIAL 3D MODELS ──
@@ -2065,7 +2206,12 @@ const Index = () => {
 
               spawnLaserBolt(leftNozzle, fwd, true);
               spawnLaserBolt(rightNozzle, fwd, true);
+
+              // Muzzle Flash Light flash
+              muzzleFlashLight.intensity = 2.8;
             }
+
+            muzzleFlashLight.intensity = Math.max(0, muzzleFlashLight.intensity - dt * 22.0);
 
             // ── COLLISION DETECTION ──
             const shipPos = playerShip.position;
@@ -2246,12 +2392,16 @@ const Index = () => {
                   hit = true;
                   initAudio();
                   audio.playHitImpact();
+                  spawnLaserImpact(bolt.mesh.position.clone(), true);
                   enemy.health -= 25;
 
                   // Visual damage spark
                   if (enemy.health <= 0) {
                     enemy.active = false;
                     enemy.mesh.visible = false;
+                    enemiesKilled++;
+                    updateCombatStatsHUD();
+                    audio.playKillScore();
                     triggerExplosion(enemy.mesh.position.clone(), 'TIE-Defender', false);
 
                     // Respawn enemy after delay to keep the action alive
@@ -2279,6 +2429,7 @@ const Index = () => {
                   hit = true;
                   initAudio();
                   audio.playHitImpact();
+                  spawnLaserImpact(bolt.mesh.position.clone(), false);
                   cameraShakeIntensity = Math.max(cameraShakeIntensity, 0.45);
                   playerHealth -= 15;
                   updateHealthHUD();
@@ -2298,6 +2449,7 @@ const Index = () => {
           }
 
           updateTrail(dt);
+          updateLaserImpacts(dt);
           updateExplosion(dt);
 
           document.getElementById('fhud-speed')!.innerText = isExploded ? '0.00000' : shipVelocity.length().toFixed(5);
@@ -2388,6 +2540,8 @@ const Index = () => {
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('mouseup', onMouseUp);
+      window.removeEventListener('pointerdown', unlockAudioHandler);
+      window.removeEventListener('touchstart', unlockAudioHandler);
       window.removeEventListener('click', onClick);
       window.removeEventListener('resize', onResize);
       renderer.dispose();
@@ -2440,7 +2594,7 @@ const Index = () => {
           <h1 id="info-title">Solar System</h1>
           <h2 id="info-subtitle">Interactive Environment</h2>
           <ul className="fact-list" id="info-facts">
-            <li><strong>Combat:</strong> Space / Click / F = Fire Lasers · Defend against Imperial TIE Fleet</li>
+            <li><strong>Combat:</strong> A / Space / Click / F = Fire Lasers · Defend against Imperial TIE Fleet</li>
             <li><strong>Flight:</strong> Arrows = pitch/yaw · Space = thrust & fire · Shift = brake</li>
             <li><strong>Gears:</strong> Keys 1–4 for speed levels (Cruise, Impulse, Combat, Hyperdrive)</li>
             <li><strong>Health:</strong> Real-time Hull Integrity bar with critical damage warnings</li>
