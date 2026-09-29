@@ -407,15 +407,22 @@ const Index = () => {
     sceneSS.add(starLayer2);
 
     // ════════════════════════════════════════════════════════════
-    //  FLIGHT SIMULATOR
+    //  FLIGHT SIMULATOR & SPACE COMBAT SYSTEM
     // ════════════════════════════════════════════════════════════
     const playerShip = new THREE.Group();
     const shipVelocity = new THREE.Vector3();
     const shipAngularVelocity = new THREE.Vector3();
-    const keys = { up:false, down:false, left:false, right:false, space:false, q:false, e:false, brake:false };
+    const keys = { up:false, down:false, left:false, right:false, space:false, q:false, e:false, brake:false, fire:false };
     let engineGlow: THREE.PointLight | null = null;
     let currentThrust = 0.0002;
     const gravityAccumulator = new THREE.Vector3();
+
+    // ── PLAYER HEALTH & COMBAT STATS ──
+    const PLAYER_MAX_HEALTH = 100;
+    let playerHealth = PLAYER_MAX_HEALTH;
+    let enemiesKilled = 0;
+    let lastPlayerShotTime = 0;
+    const PLAYER_FIRE_COOLDOWN = 0.16; // rapid dual plasma cannons
 
     // ── HIGH-FIDELITY 3D CINEMATIC EXPLOSION SYSTEM (Inspired by Stylized 3D Fireball Mesh & PBR Shaders) ──
     let isExploded = false;
@@ -661,39 +668,52 @@ const Index = () => {
     let shockwaveScale = 0;
     let shockwaveOpacity = 0;
 
-    function triggerExplosion(impactPoint: THREE.Vector3, impactObjName = 'Space Object') {
-      if (isExploded) return;
-      isExploded = true;
-      explosionTimer = EXPLOSION_RESPAWN_DELAY;
-      cameraShakeIntensity = 1.35;
+    function triggerExplosion(impactPoint: THREE.Vector3, impactObjName = 'Space Object', isPlayer = true) {
+      if (isPlayer) {
+        if (isExploded) return;
+        isExploded = true;
+        explosionTimer = EXPLOSION_RESPAWN_DELAY;
+        cameraShakeIntensity = 1.35;
+        playerHealth = 0;
+        updateHealthHUD();
 
-      // Audio burst with multi-stage synthesis
-      initAudio();
-      audio.playExplosion();
+        // Audio burst with multi-stage synthesis
+        initAudio();
+        audio.playExplosion();
 
-      // UI HUD feedback
-      showToast(`💥 CRITICAL IMPACT: DESTROYED BY ${impactObjName.toUpperCase()}`);
+        // UI HUD feedback
+        showToast(`💥 CRITICAL IMPACT: DESTROYED BY ${impactObjName.toUpperCase()}`);
 
-      // Hide ship visuals & halt physics
-      playerShip.visible = false;
-      shipVelocity.set(0, 0, 0);
-      shipAngularVelocity.set(0, 0, 0);
+        // Hide ship visuals & halt physics
+        playerShip.visible = false;
+        shipVelocity.set(0, 0, 0);
+        shipAngularVelocity.set(0, 0, 0);
+      } else {
+        // Enemy ship explosion sound & camera shake
+        initAudio();
+        audio.playExplosion();
+        audio.playKillScore();
+        cameraShakeIntensity = Math.max(cameraShakeIntensity, 0.6);
+        enemiesKilled++;
+        showToast(`🎯 TARGET DESTROYED: ${impactObjName.toUpperCase()} (+100 PTS)`);
+        updateCombatStatsHUD();
+      }
 
       // 1. Dynamic Flash Light
       explosionLight.position.copy(impactPoint);
-      explosionLight.intensity = 26.0;
+      explosionLight.intensity = isPlayer ? 26.0 : 16.0;
 
       // 2. 3D Volumetric Fireball Mesh (Billowing Stylized Plumes)
       fireballMesh.position.copy(impactPoint);
-      fireballMesh.scale.set(1, 1, 1);
+      fireballMesh.scale.set(isPlayer ? 1 : 0.7, isPlayer ? 1 : 0.7, isPlayer ? 1 : 0.7);
       fireballMat.uniforms.uProgress.value = 0.0;
       fireballMat.uniforms.uTime.value = 0.0;
       fireballMesh.visible = true;
 
       // 3. Shockwave Ring & Expansion Sphere
       shockwaveMesh.position.copy(impactPoint);
-      shockwaveMesh.quaternion.copy(playerShip.quaternion);
-      shockwaveScale = 0.3;
+      shockwaveMesh.quaternion.copy(isPlayer ? playerShip.quaternion : new THREE.Quaternion().random());
+      shockwaveScale = isPlayer ? 0.3 : 0.2;
       shockwaveOpacity = 1.0;
       shockwaveMesh.visible = true;
 
@@ -707,7 +727,7 @@ const Index = () => {
       for (let i = 0; i < EXP_PARTICLE_COUNT; i++) {
         const theta = Math.random() * Math.PI * 2;
         const phi = Math.acos((Math.random() * 2) - 1);
-        const speed = 0.12 + Math.random() * 0.55;
+        const speed = (isPlayer ? 0.12 : 0.08) + Math.random() * 0.55;
         const vel = new THREE.Vector3(
           Math.sin(phi) * Math.cos(theta),
           Math.sin(phi) * Math.sin(theta),
@@ -741,7 +761,7 @@ const Index = () => {
       debrisPieces.forEach(dp => {
         dp.mesh.position.copy(impactPoint);
         dp.mesh.visible = true;
-        const speed = 0.12 + Math.random() * 0.45;
+        const speed = (isPlayer ? 0.12 : 0.09) + Math.random() * 0.45;
         dp.vel.set(
           (Math.random() - 0.5) * 2,
           (Math.random() - 0.5) * 2,
@@ -854,8 +874,38 @@ const Index = () => {
       }
     }
 
+    function updateHealthHUD() {
+      const fill = document.getElementById('player-health-fill');
+      const text = document.getElementById('player-health-text');
+      if (fill && text) {
+        const pct = Math.max(0, Math.min(100, Math.round(playerHealth)));
+        fill.style.width = pct + '%';
+        text.innerText = `${pct}%`;
+        fill.className = 'health-bar-fill';
+        if (pct <= 25) {
+          fill.classList.add('critical');
+        } else if (pct <= 55) {
+          fill.classList.add('warning');
+        }
+      }
+    }
+
+    function updateCombatStatsHUD() {
+      const scoreEl = document.getElementById('combat-kills-text');
+      if (scoreEl) {
+        scoreEl.innerText = `${enemiesKilled}`;
+      }
+      const enemyCountEl = document.getElementById('combat-enemies-text');
+      if (enemyCountEl) {
+        const activeCount = enemyShips.filter(e => e.active).length;
+        enemyCountEl.innerText = `${activeCount}`;
+      }
+    }
+
     function respawnShip() {
       isExploded = false;
+      playerHealth = PLAYER_MAX_HEALTH;
+      updateHealthHUD();
       playerShip.visible = true;
       playerShip.position.set(30, 5, 0);
       playerShip.quaternion.set(0, 0, 0, 1);
@@ -870,7 +920,7 @@ const Index = () => {
       shockwaveSphere.visible = false;
       explosionLight.intensity = 0;
 
-      showToast("🚀 SHIP REPAIRED & RESPAWNED AT SAFE ORBIT");
+      showToast("🚀 SHIELDS RECHARGED & SHIP RESPAWNED AT SAFE ORBIT");
     }
 
     // ── ENGINE PARTICLE TRAIL ──
@@ -1013,6 +1063,257 @@ const Index = () => {
     sceneSS.add(playerShip);
 
     // ════════════════════════════════════════════════════════════
+    //  STAR WARS TIE-DEFENDER FLEET & LASER CANNON SYSTEM
+    // ════════════════════════════════════════════════════════════
+    let customEnemyModelTemplate: THREE.Group | null = null;
+
+    interface LaserBolt {
+      mesh: THREE.Mesh;
+      dir: THREE.Vector3;
+      speed: number;
+      life: number;
+      maxLife: number;
+      isPlayer: boolean;
+    }
+
+    interface EnemyShip {
+      mesh: THREE.Group;
+      velocity: THREE.Vector3;
+      health: number;
+      maxHealth: number;
+      active: boolean;
+      fireCooldown: number;
+      engineLight: THREE.PointLight;
+      patrolAngle: number;
+      orbitRadius: number;
+      orbitSpeed: number;
+      orbitHeight: number;
+    }
+
+    const laserBolts: LaserBolt[] = [];
+    const MAX_LASERS = 120;
+    const playerLaserGeo = new THREE.CylinderGeometry(0.003, 0.003, 0.12, 6);
+    playerLaserGeo.rotateX(Math.PI / 2);
+    const playerLaserMat = new THREE.MeshBasicMaterial({
+      color: 0x00f0ff,
+      transparent: true,
+      opacity: 0.95
+    });
+
+    const enemyLaserGeo = new THREE.CylinderGeometry(0.0035, 0.0035, 0.14, 6);
+    enemyLaserGeo.rotateX(Math.PI / 2);
+    const enemyLaserMat = new THREE.MeshBasicMaterial({
+      color: 0x00ff44,
+      transparent: true,
+      opacity: 0.95
+    });
+
+    function spawnLaserBolt(origin: THREE.Vector3, direction: THREE.Vector3, isPlayer = true) {
+      if (laserBolts.length >= MAX_LASERS) {
+        const old = laserBolts.shift();
+        if (old) sceneSS.remove(old.mesh);
+      }
+
+      const boltMesh = new THREE.Mesh(isPlayer ? playerLaserGeo : enemyLaserGeo, isPlayer ? playerLaserMat : enemyLaserMat);
+      boltMesh.position.copy(origin);
+      boltMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), direction.clone().normalize());
+
+      sceneSS.add(boltMesh);
+      laserBolts.push({
+        mesh: boltMesh,
+        dir: direction.clone().normalize(),
+        speed: isPlayer ? 1.8 : 1.2,
+        life: 0,
+        maxLife: isPlayer ? 1.6 : 2.0,
+        isPlayer
+      });
+    }
+
+    // ── BUILD STAR WARS TIE-DEFENDER INSPIRED ENEMY SHIPS ──
+    // Inspired by Sketchfab 94382b81ef0748d598816e1842ad9a86
+    // Uses loaded custom Star Wars GLTF model or procedural TIE-Defender
+    function createTieDefenderShip(): THREE.Group {
+      const enemyGroup = new THREE.Group();
+      // Visual scale calibrated for space combat visibility
+      const scale = TARGET_SHIP_SIZE * 3.8;
+
+      if (customEnemyModelTemplate) {
+        const clonedModel = customEnemyModelTemplate.clone(true);
+        clonedModel.traverse((child: any) => {
+          if (child.isMesh && child.material) {
+            child.material.side = THREE.DoubleSide;
+            child.frustumCulled = false;
+          }
+        });
+        enemyGroup.add(clonedModel);
+
+        // High Intensity Red Ion Engine Exhaust Glow
+        const engLight = new THREE.PointLight(0xff2200, 2.2, scale * 18);
+        engLight.position.set(0, 0, scale * 0.32);
+        enemyGroup.add(engLight);
+
+        return enemyGroup;
+      }
+
+      const hullMat = new THREE.MeshStandardMaterial({
+        color: 0x5a6978,
+        metalness: 0.8,
+        roughness: 0.25,
+        emissive: 0x111922,
+        emissiveIntensity: 0.5
+      });
+      const wingMat = new THREE.MeshStandardMaterial({
+        color: 0x2b3842,
+        metalness: 0.85,
+        roughness: 0.3,
+        emissive: 0x0a141c,
+        emissiveIntensity: 0.4
+      });
+      const solarPanelMat = new THREE.MeshStandardMaterial({
+        color: 0x101a24,
+        metalness: 0.95,
+        roughness: 0.15,
+        emissive: 0x050f18,
+        emissiveIntensity: 0.6
+      });
+      const redEyeMat = new THREE.MeshBasicMaterial({
+        color: 0xff1744
+      });
+      const redGlowHaloMat = new THREE.MeshBasicMaterial({
+        color: 0xff3d00,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.45
+      });
+      const greenLaserMat = new THREE.MeshBasicMaterial({ color: 0x00ff66 });
+
+      // 1. Central Spherical Command Pod (Ball Cockpit)
+      const pod = new THREE.Mesh(new THREE.SphereGeometry(scale * 0.28, 16, 16), hullMat);
+      enemyGroup.add(pod);
+
+      // 2. Front Viewport Window (Iconic Imperial Red Viewport)
+      const viewport = new THREE.Mesh(new THREE.CylinderGeometry(scale * 0.13, scale * 0.14, scale * 0.09, 8), redEyeMat);
+      viewport.rotation.x = Math.PI / 2;
+      viewport.position.set(0, 0, -scale * 0.25);
+      enemyGroup.add(viewport);
+
+      // Red Cockpit Point Light (Illuminates the fighter's front in deep space)
+      const cockpitGlow = new THREE.PointLight(0xff1744, 1.2, scale * 8);
+      cockpitGlow.position.set(0, 0, -scale * 0.3);
+      enemyGroup.add(cockpitGlow);
+
+      // 3. Three Radial Pylons (Tri-Wing Symmetry at 0, 120, 240 degrees)
+      const angles = [0, (Math.PI * 2) / 3, (Math.PI * 4) / 3];
+      angles.forEach((angle) => {
+        const wingMount = new THREE.Group();
+        wingMount.rotation.z = angle;
+
+        // Heavy Pylon strut connecting pod to wing
+        const strut = new THREE.Mesh(new THREE.BoxGeometry(scale * 0.09, scale * 0.48, scale * 0.14), hullMat);
+        strut.position.set(0, scale * 0.35, 0);
+        wingMount.add(strut);
+
+        // Angled Dagger Solar Wing Assembly
+        const wing = new THREE.Mesh(new THREE.BoxGeometry(scale * 0.28, scale * 0.85, scale * 0.05), wingMat);
+        wing.position.set(0, scale * 0.82, scale * 0.04);
+        wing.rotation.x = -Math.PI / 10;
+        wingMount.add(wing);
+
+        // Solar Grid insets
+        const panel = new THREE.Mesh(new THREE.BoxGeometry(scale * 0.24, scale * 0.76, scale * 0.055), solarPanelMat);
+        panel.position.set(0, scale * 0.82, scale * 0.04);
+        panel.rotation.x = -Math.PI / 10;
+        wingMount.add(panel);
+
+        // Solar Panel Glowing Edge Trim
+        const edgeTrim = new THREE.Mesh(new THREE.BoxGeometry(scale * 0.26, scale * 0.78, scale * 0.06), redGlowHaloMat);
+        edgeTrim.position.set(0, scale * 0.82, scale * 0.04);
+        edgeTrim.rotation.x = -Math.PI / 10;
+        wingMount.add(edgeTrim);
+
+        // Wingtip Laser Cannon Barrels
+        const cannon = new THREE.Mesh(new THREE.CylinderGeometry(scale * 0.025, scale * 0.025, scale * 0.26, 6), hullMat);
+        cannon.rotation.x = Math.PI / 2;
+        cannon.position.set(0, scale * 1.25, -scale * 0.06);
+        const cannonTip = new THREE.Mesh(new THREE.SphereGeometry(scale * 0.032, 6, 6), greenLaserMat);
+        cannonTip.position.set(0, scale * 1.25, -scale * 0.19);
+        wingMount.add(cannon);
+        wingMount.add(cannonTip);
+
+        enemyGroup.add(wingMount);
+      });
+
+      // 4. Rear Twin Ion Engines
+      const engineMesh = new THREE.Mesh(new THREE.CylinderGeometry(scale * 0.11, scale * 0.11, scale * 0.18, 8), hullMat);
+      engineMesh.rotation.x = Math.PI / 2;
+      engineMesh.position.set(0, 0, scale * 0.24);
+      enemyGroup.add(engineMesh);
+
+      // High Intensity Red Ion Engine Exhaust Glow
+      const engLight = new THREE.PointLight(0xff2200, 2.0, scale * 18);
+      engLight.position.set(0, 0, scale * 0.32);
+      enemyGroup.add(engLight);
+
+      const ionExhaust = new THREE.Mesh(new THREE.CircleGeometry(scale * 0.09, 8), new THREE.MeshBasicMaterial({ color: 0xff3300 }));
+      ionExhaust.position.set(0, 0, scale * 0.33);
+      enemyGroup.add(ionExhaust);
+
+      return enemyGroup;
+    }
+
+    const enemyShips: EnemyShip[] = [];
+    const ENEMY_COUNT = 6;
+
+    // Spawn Enemy TIE-Defender Fleet stationed in orbital rings & near starting flight sector
+    function initEnemyFleet() {
+      // Clear existing if any
+      enemyShips.forEach(e => sceneSS.remove(e.mesh));
+      enemyShips.length = 0;
+
+      // Spawn zones distributed from close combat range (1.2 - 3.5 units ahead of player start at 30,5,0)
+      // to planetary defensive perimeters
+      const spawnZones = [
+        { radius: 29.5, height: 4.8, speed: 0.16, baseAngle: 0.08 },  // Just ahead of player ship!
+        { radius: 31.0, height: 5.6, speed: -0.18, baseAngle: 0.14 }, // Patrol wingman near player
+        { radius: 28.0, height: 4.2, speed: 0.20, baseAngle: 0.22 },  // Escort flank
+        { radius: 34.0, height: -2.0, speed: -0.12, baseAngle: 0.5 },
+        { radius: 38.0, height: 3.5, speed: 0.14, baseAngle: 1.2 },
+        { radius: 43.0, height: -3.0, speed: -0.10, baseAngle: 2.4 }
+      ];
+
+      for (let i = 0; i < ENEMY_COUNT; i++) {
+        const zone = spawnZones[i % spawnZones.length];
+        const shipMesh = createTieDefenderShip();
+        const engLight = shipMesh.children.find(c => c instanceof THREE.PointLight) as THREE.PointLight;
+
+        const enemy: EnemyShip = {
+          mesh: shipMesh,
+          velocity: new THREE.Vector3(),
+          health: 60,
+          maxHealth: 60,
+          active: true,
+          fireCooldown: 1.0 + Math.random() * 2.0,
+          engineLight: engLight,
+          patrolAngle: zone.baseAngle,
+          orbitRadius: zone.radius,
+          orbitSpeed: zone.speed,
+          orbitHeight: zone.height
+        };
+
+        const x = Math.cos(enemy.patrolAngle) * enemy.orbitRadius;
+        const z = Math.sin(enemy.patrolAngle) * enemy.orbitRadius;
+        enemy.mesh.position.set(x, enemy.orbitHeight, z);
+
+        sceneSS.add(enemy.mesh);
+        enemyShips.push(enemy);
+      }
+
+      updateCombatStatsHUD();
+    }
+
+    initEnemyFleet();
+
+    // ════════════════════════════════════════════════════════════
     //  EVENTS
     // ════════════════════════════════════════════════════════════
     const onKeyDown = (e: KeyboardEvent) => {
@@ -1021,7 +1322,8 @@ const Index = () => {
       if (e.code==='ArrowDown')  keys.down=true;
       if (e.code==='ArrowLeft')  keys.left=true;
       if (e.code==='ArrowRight') keys.right=true;
-      if (e.code==='Space')  keys.space=true;
+      if (e.code==='Space')  { keys.space=true; keys.fire=true; }
+      if (e.code==='KeyF')   keys.fire=true;
       if (e.code==='KeyQ')   keys.q=true;
       if (e.code==='KeyE')   keys.e=true;
       if (e.code==='ShiftLeft'||e.code==='ShiftRight') keys.brake=true;
@@ -1036,14 +1338,27 @@ const Index = () => {
       if (e.code==='ArrowDown')  keys.down=false;
       if (e.code==='ArrowLeft')  keys.left=false;
       if (e.code==='ArrowRight') keys.right=false;
-      if (e.code==='Space')  keys.space=false;
+      if (e.code==='Space')  { keys.space=false; keys.fire=false; }
+      if (e.code==='KeyF')   keys.fire=false;
       if (e.code==='KeyQ')   keys.q=false;
       if (e.code==='KeyE')   keys.e=false;
       if (e.code==='ShiftLeft'||e.code==='ShiftRight') keys.brake=false;
     };
 
+    const onMouseDown = (e: MouseEvent) => {
+      if (flightModeActive && e.button === 0 && !(e.target as HTMLElement).closest('button')) {
+        keys.fire = true;
+      }
+    };
+
+    const onMouseUp = () => {
+      keys.fire = false;
+    };
+
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mouseup', onMouseUp);
 
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
@@ -1115,6 +1430,12 @@ const Index = () => {
       document.getElementById('target-marker')!.style.display = 'flex';
       document.getElementById('gravity-indicator')!.style.display = 'none';
       document.getElementById('flight-hud')!.style.display = 'none';
+      const combatHud = document.getElementById('combat-hud');
+      if (combatHud) combatHud.style.display = 'none';
+      const combatCrosshair = document.getElementById('combat-crosshair');
+      if (combatCrosshair) combatCrosshair.style.display = 'none';
+      const enemyHudContainer = document.getElementById('enemy-hud-container');
+      if (enemyHudContainer) enemyHudContainer.style.display = 'none';
       document.getElementById('planet-navigator')!.style.display = 'none';
     }
 
@@ -1231,12 +1552,21 @@ const Index = () => {
       document.getElementById('dynamic-hud')!.style.display = 'none';
       document.getElementById('planet-stats')!.style.display = 'none';
       document.getElementById('flight-hud')!.style.display = flightModeActive ? 'flex' : 'none';
+      const combatHud = document.getElementById('combat-hud');
+      if (combatHud) combatHud.style.display = flightModeActive ? 'flex' : 'none';
+      const combatCrosshair = document.getElementById('combat-crosshair');
+      if (combatCrosshair) combatCrosshair.style.display = flightModeActive ? 'block' : 'none';
+      const enemyHudContainer = document.getElementById('enemy-hud-container');
+      if (enemyHudContainer) enemyHudContainer.style.display = flightModeActive ? 'block' : 'none';
+
       if (flightModeActive) {
         document.getElementById('btn-flight-mode')!.innerText = '✖ Exit Flight';
         document.getElementById('btn-flight-mode')!.className = 'btn-danger';
-        const off = new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.8, TARGET_SHIP_SIZE * 3.5).applyMatrix4(playerShip.matrixWorld);
+        const off = new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.9 + 0.02, TARGET_SHIP_SIZE * 3.8 + 0.08).applyMatrix4(playerShip.matrixWorld);
         camera.position.copy(off);
-        showToast("FLIGHT MODE ── 1-4 THRUST · SPACE = ACCEL · SHIFT = BRAKE");
+        updateHealthHUD();
+        updateCombatStatsHUD();
+        showToast("SPACE COMBAT ENGAGED ── CLICK / SPACE / F TO FIRE · 1-4 SPEED");
       } else {
         document.getElementById('btn-flight-mode')!.innerText = '🚀 Pilot Ship';
         document.getElementById('btn-flight-mode')!.className = 'btn-success';
@@ -1316,14 +1646,103 @@ const Index = () => {
       playerShip.add(engineGlow);
     }
 
-    // Auto-load bundled default spaceship model
+    function applyEnemyModel(scene: THREE.Group, modelName = 'Star Wars Vessel') {
+      const model = scene;
+      const box = new THREE.Box3().setFromObject(model);
+      const sz = new THREE.Vector3(); box.getSize(sz);
+      const targetDim = TARGET_SHIP_SIZE * 3.8;
+      const scale = targetDim / Math.max(sz.x, sz.y, sz.z);
+      model.scale.setScalar(scale);
+      const sc = new THREE.Box3().setFromObject(model);
+      const ctr = new THREE.Vector3(); sc.getCenter(ctr);
+      model.position.sub(ctr);
+      const wrap = new THREE.Group();
+      wrap.add(model);
+      wrap.rotation.y = Math.PI;
+
+      customEnemyModelTemplate = wrap;
+
+      // Rebuild & update all active enemy ships immediately
+      initEnemyFleet();
+      showToast(`⚔ Modelo Star Wars carregado: ${modelName}`);
+    }
+
+    // ── AUTOMATIC STAR WARS ENEMY FLEET & PLAYER SPACESHIP LOADER ──
     const gltfLoader = new GLTFLoader();
+
+    // 1. Auto-load bundled player spaceship model
     gltfLoader.load('/models/spaceship.glb', (gltf) => {
       applyShipModel(gltf.scene);
-      console.log('Default spaceship loaded automatically from /models/spaceship.glb');
-      showToast('🚀 Spaceship model loaded');
+      console.log('Player spaceship loaded automatically from /models/spaceship.glb');
     }, undefined, (err) => {
       console.warn('Default spaceship model failed to load:', err);
+    });
+
+    // 2. Auto-search and load Star Wars 3D model for enemy fleet
+    const starWarsCandidateFiles = [
+      'starwars.glb', 'star_wars.glb', 'star-wars.glb',
+      'tie_defender.glb', 'tie_fighter.glb', 'tie.glb',
+      'star-wars-space-ship.glb', 'starwars_spaceship.glb'
+    ];
+
+    function tryLoadStarWarsCandidates(index = 0) {
+      if (index >= starWarsCandidateFiles.length) {
+        // Fallback: auto-clone and style 3D spaceship model with Star Wars Imperial livery & red ion engines
+        gltfLoader.load('/models/spaceship.glb', (gltf) => {
+          const enemyModel = gltf.scene.clone(true);
+          enemyModel.traverse((child: any) => {
+            if (child.isMesh && child.material) {
+              child.material = child.material.clone();
+              if (child.material.color) {
+                child.material.color.setHex(0x3a4856); // Imperial dark steel
+              }
+              if (child.material.emissive) {
+                child.material.emissive.setHex(0x1a0505);
+                child.material.emissiveIntensity = 0.6;
+              }
+            }
+          });
+          applyEnemyModel(enemyModel, 'Imperial Star Wars Fighter');
+          console.log('Imperial Star Wars fleet initialized with 3D mesh');
+        });
+        return;
+      }
+
+      const filename = starWarsCandidateFiles[index];
+      gltfLoader.load(
+        `/models/${filename}`,
+        (gltf) => {
+          applyEnemyModel(gltf.scene, filename);
+          console.log(`Successfully loaded Star Wars model from /models/${filename}`);
+        },
+        undefined,
+        () => {
+          tryLoadStarWarsCandidates(index + 1);
+        }
+      );
+    }
+    tryLoadStarWarsCandidates(0);
+
+    // ── DRAG & DROP 3D FILE ANYWHERE ONTO WINDOW (OPTIONAL USER CONVENIENCE) ──
+    window.addEventListener('dragover', (e) => {
+      e.preventDefault();
+    });
+
+    window.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const files = Array.from(e.dataTransfer?.files || []);
+      const glbFile = files.find(f => f.name.endsWith('.glb') || f.name.endsWith('.gltf'));
+      if (!glbFile) return;
+
+      const blobUrl = URL.createObjectURL(glbFile);
+      gltfLoader.load(blobUrl, (gltf) => {
+        applyEnemyModel(gltf.scene, glbFile.name);
+        showToast(`✨ Modelo Star Wars carregado: ${glbFile.name}`);
+        URL.revokeObjectURL(blobUrl);
+      }, undefined, (err) => {
+        console.error('Failed to parse dropped 3D model:', err);
+        showToast('❌ Erro ao carregar arquivo 3D arrastado');
+      });
     });
 
     // ── GOOGLE ARTS & CULTURE CELESTIAL 3D MODELS ──
@@ -1627,6 +2046,27 @@ const Index = () => {
             playerShip.position.add(shipVelocity);
             playerShip.updateMatrixWorld(true);
 
+            // ── PLAYER FIRING LASER CANNONS ──
+            if (keys.fire && (clock.getElapsedTime() - lastPlayerShotTime >= PLAYER_FIRE_COOLDOWN)) {
+              lastPlayerShotTime = clock.getElapsedTime();
+              initAudio();
+              audio.playPlayerLaser();
+
+              const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(playerShip.quaternion);
+              const right = new THREE.Vector3(1, 0, 0).applyQuaternion(playerShip.quaternion);
+
+              // Dual wingtip laser salvos
+              const leftNozzle = playerShip.position.clone()
+                .addScaledVector(right, -TARGET_SHIP_SIZE * 0.4)
+                .addScaledVector(fwd, TARGET_SHIP_SIZE * 0.5);
+              const rightNozzle = playerShip.position.clone()
+                .addScaledVector(right, TARGET_SHIP_SIZE * 0.4)
+                .addScaledVector(fwd, TARGET_SHIP_SIZE * 0.5);
+
+              spawnLaserBolt(leftNozzle, fwd, true);
+              spawnLaserBolt(rightNozzle, fwd, true);
+            }
+
             // ── COLLISION DETECTION ──
             const shipPos = playerShip.position;
             const shipRadius = TARGET_SHIP_SIZE * 0.4;
@@ -1634,7 +2074,7 @@ const Index = () => {
             // 1. Collision with Sun (radius ~ 6.0)
             const sunDist = shipPos.distanceTo(sunMesh.position);
             if (sunDist < 6.0 + shipRadius) {
-              triggerExplosion(shipPos.clone(), 'The Sun');
+              triggerExplosion(shipPos.clone(), 'The Sun', true);
             }
 
             // 2. Collision with Planets & Moons
@@ -1645,7 +2085,7 @@ const Index = () => {
                 const bodyRadius = b.mesh.userData?.radius || (b.type === 'moon' ? 0.3 : 1.0);
                 const dist = shipPos.distanceTo(wp);
                 if (dist < bodyRadius + shipRadius) {
-                  triggerExplosion(shipPos.clone(), b.mesh.userData?.name || 'Celestial Body');
+                  triggerExplosion(shipPos.clone(), b.mesh.userData?.name || 'Celestial Body', true);
                   break;
                 }
               }
@@ -1657,7 +2097,7 @@ const Index = () => {
               if (rXZ >= 39.5 && rXZ <= 47.5 && Math.abs(shipPos.y) <= 1.2) {
                 // High density asteroid collision probability on flight
                 if (Math.random() < (currentSpeed > 0.005 ? 0.35 : 0.08) * dt * 60) {
-                  triggerExplosion(shipPos.clone(), 'Asteroid Belt Debris');
+                  triggerExplosion(shipPos.clone(), 'Asteroid Belt Debris', true);
                 }
               }
             }
@@ -1667,9 +2107,193 @@ const Index = () => {
               const rXZ = Math.sqrt(shipPos.x * shipPos.x + shipPos.z * shipPos.z);
               if (rXZ >= 127 && rXZ <= 149 && Math.abs(shipPos.y) <= 2.5) {
                 if (Math.random() < (currentSpeed > 0.005 ? 0.25 : 0.06) * dt * 60) {
-                  triggerExplosion(shipPos.clone(), 'Kuiper Belt Comet');
+                  triggerExplosion(shipPos.clone(), 'Kuiper Belt Comet', true);
                 }
               }
+            }
+          }
+
+          // ── ENEMY TIE FLEET AI & COMBAT UPDATE ──
+          let hasLockedTarget = false;
+          const crosshairEl = document.getElementById('combat-crosshair');
+
+          enemyShips.forEach((enemy) => {
+            if (!enemy.active) return;
+
+            const distToPlayer = enemy.mesh.position.distanceTo(playerShip.position);
+
+            // Orbit patrol or engage player in dogfight
+            if (flightModeActive && !isExploded && distToPlayer < 25.0) {
+              // ENGAGEMENT DOGFIGHT MODE: Swarm & pursue player ship
+              const toPlayer = new THREE.Vector3().subVectors(playerShip.position, enemy.mesh.position);
+              const targetQuat = new THREE.Quaternion().setFromRotationMatrix(
+                new THREE.Matrix4().lookAt(enemy.mesh.position, playerShip.position, new THREE.Vector3(0, 1, 0))
+              );
+              enemy.mesh.quaternion.slerp(targetQuat, 2.5 * dt);
+
+              // Fly towards attack distance (~1.8 units away)
+              const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(enemy.mesh.quaternion);
+              const desiredSpeed = distToPlayer > 3.0 ? 0.6 : (distToPlayer < 1.5 ? -0.2 : 0.1);
+              enemy.mesh.position.addScaledVector(forward, desiredSpeed * dt * 10);
+
+              // Enemy green plasma laser firing
+              enemy.fireCooldown -= dt;
+              if (enemy.fireCooldown <= 0 && distToPlayer < 18.0) {
+                enemy.fireCooldown = 1.2 + Math.random() * 1.5;
+                initAudio();
+                audio.playEnemyLaser();
+
+                // Fire from 3 tri-wing cannon tips
+                const shootOrigin = enemy.mesh.position.clone().addScaledVector(forward, 0.1);
+                // Slight aim scatter
+                const aimDir = toPlayer.clone().normalize();
+                aimDir.x += (Math.random() - 0.5) * 0.06;
+                aimDir.y += (Math.random() - 0.5) * 0.06;
+                aimDir.z += (Math.random() - 0.5) * 0.06;
+                aimDir.normalize();
+
+                spawnLaserBolt(shootOrigin, aimDir, false);
+              }
+
+              // Check if player's reticle is aimed directly at this enemy
+              const playerFwd = new THREE.Vector3(0, 0, -1).applyQuaternion(playerShip.quaternion);
+              const playerToEnemy = new THREE.Vector3().subVectors(enemy.mesh.position, playerShip.position).normalize();
+              if (playerFwd.dot(playerToEnemy) > 0.985) {
+                hasLockedTarget = true;
+              }
+
+              // Ramming collision check with player
+              if (distToPlayer < TARGET_SHIP_SIZE * 2.0 && !isExploded) {
+                triggerExplosion(enemy.mesh.position.clone(), 'Enemy TIE Fighter', false);
+                enemy.active = false;
+                enemy.mesh.visible = false;
+                playerHealth -= 40;
+                updateHealthHUD();
+                if (playerHealth <= 0) {
+                  triggerExplosion(playerShip.position.clone(), 'Ship Collision', true);
+                }
+              }
+            } else {
+              // PATROL ORBIT MODE: Orbit around the solar system
+              enemy.patrolAngle += enemy.orbitSpeed * dt * 0.2;
+              const tx = Math.cos(enemy.patrolAngle) * enemy.orbitRadius;
+              const tz = Math.sin(enemy.patrolAngle) * enemy.orbitRadius;
+              const nextPos = new THREE.Vector3(tx, enemy.orbitHeight, tz);
+              const forward = new THREE.Vector3().subVectors(nextPos, enemy.mesh.position).normalize();
+              if (forward.lengthSq() > 0.001) {
+                const targetQuat = new THREE.Quaternion().setFromRotationMatrix(
+                  new THREE.Matrix4().lookAt(enemy.mesh.position, nextPos, new THREE.Vector3(0, 1, 0))
+                );
+                enemy.mesh.quaternion.slerp(targetQuat, 0.1);
+              }
+              enemy.mesh.position.copy(nextPos);
+            }
+          });
+
+          // Update HUD target lock crosshair
+          if (crosshairEl) {
+            if (hasLockedTarget) crosshairEl.classList.add('locked');
+            else crosshairEl.classList.remove('locked');
+          }
+
+          // Project Enemy 3D Positions to Screen Space HUD Brackets
+          const enemyHudContainer = document.getElementById('enemy-hud-container');
+          if (enemyHudContainer && flightModeActive) {
+            enemyShips.forEach((enemy, idx) => {
+              const tagEl = document.getElementById(`enemy-tag-${idx}`);
+              if (!tagEl) return;
+
+              if (!enemy.active || isExploded) {
+                tagEl.style.display = 'none';
+                return;
+              }
+
+              // Vector in camera space
+              const screenPos = enemy.mesh.position.clone().project(camera);
+              const isBehind = screenPos.z > 1.0;
+              const dist = enemy.mesh.position.distanceTo(playerShip.position);
+
+              if (isBehind || screenPos.x < -1.1 || screenPos.x > 1.1 || screenPos.y < -1.1 || screenPos.y > 1.1 || dist > 45.0) {
+                tagEl.style.display = 'none';
+              } else {
+                tagEl.style.display = 'block';
+                const px = (screenPos.x * 0.5 + 0.5) * window.innerWidth;
+                const py = (screenPos.y * -0.5 + 0.5) * window.innerHeight;
+                tagEl.style.transform = `translate(${px}px, ${py}px)`;
+
+                const distEl = document.getElementById(`enemy-dist-${idx}`);
+                if (distEl) {
+                  distEl.innerText = `${(dist * 100).toFixed(0)}m · ${Math.round((enemy.health / enemy.maxHealth) * 100)}%`;
+                }
+              }
+            });
+          }
+
+          // ── UPDATE & COLLIDE ALL ACTIVE LASER BOLTS ──
+          for (let i = laserBolts.length - 1; i >= 0; i--) {
+            const bolt = laserBolts[i];
+            bolt.life += dt;
+            bolt.mesh.position.addScaledVector(bolt.dir, bolt.speed * dt * 50);
+
+            let hit = false;
+
+            if (bolt.isPlayer) {
+              // Check hit against active enemies
+              for (const enemy of enemyShips) {
+                if (!enemy.active) continue;
+                const d = bolt.mesh.position.distanceTo(enemy.mesh.position);
+                if (d < TARGET_SHIP_SIZE * 2.2) {
+                  hit = true;
+                  initAudio();
+                  audio.playHitImpact();
+                  enemy.health -= 25;
+
+                  // Visual damage spark
+                  if (enemy.health <= 0) {
+                    enemy.active = false;
+                    enemy.mesh.visible = false;
+                    triggerExplosion(enemy.mesh.position.clone(), 'TIE-Defender', false);
+
+                    // Respawn enemy after delay to keep the action alive
+                    setTimeout(() => {
+                      enemy.health = enemy.maxHealth;
+                      enemy.active = true;
+                      enemy.mesh.visible = true;
+                      const randomAngle = Math.random() * Math.PI * 2;
+                      enemy.mesh.position.set(
+                        Math.cos(randomAngle) * enemy.orbitRadius,
+                        enemy.orbitHeight,
+                        Math.sin(randomAngle) * enemy.orbitRadius
+                      );
+                      updateCombatStatsHUD();
+                    }, 8000);
+                  }
+                  break;
+                }
+              }
+            } else {
+              // Enemy laser hitting player
+              if (!isExploded) {
+                const d = bolt.mesh.position.distanceTo(playerShip.position);
+                if (d < TARGET_SHIP_SIZE * 1.5) {
+                  hit = true;
+                  initAudio();
+                  audio.playHitImpact();
+                  cameraShakeIntensity = Math.max(cameraShakeIntensity, 0.45);
+                  playerHealth -= 15;
+                  updateHealthHUD();
+
+                  if (playerHealth <= 0) {
+                    triggerExplosion(playerShip.position.clone(), 'Imperial Turbolasers', true);
+                  }
+                }
+              }
+            }
+
+            // Remove decayed or collided laser bolts
+            if (hit || bolt.life >= bolt.maxLife) {
+              sceneSS.remove(bolt.mesh);
+              laserBolts.splice(i, 1);
             }
           }
 
@@ -1762,6 +2386,8 @@ const Index = () => {
       cancelAnimationFrame(animFrameId);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mouseup', onMouseUp);
       window.removeEventListener('click', onClick);
       window.removeEventListener('resize', onResize);
       renderer.dispose();
@@ -1814,11 +2440,12 @@ const Index = () => {
           <h1 id="info-title">Solar System</h1>
           <h2 id="info-subtitle">Interactive Environment</h2>
           <ul className="fact-list" id="info-facts">
-            <li><strong>Orbits:</strong> Toggle visible paths with ◯ Orbits</li>
-            <li><strong>Orrery:</strong> Top-down view of all orbits</li>
-            <li><strong>Gravity:</strong> Real Newtonian gravity on ship</li>
-            <li><strong>Flight:</strong> Arrows = pitch/yaw · Space = thrust · Shift = brake</li>
-            <li><strong>Gears:</strong> Keys 1–4 for thrust levels</li>
+            <li><strong>Combat:</strong> Space / Click / F = Fire Lasers · Defend against Imperial TIE Fleet</li>
+            <li><strong>Flight:</strong> Arrows = pitch/yaw · Space = thrust & fire · Shift = brake</li>
+            <li><strong>Gears:</strong> Keys 1–4 for speed levels (Cruise, Impulse, Combat, Hyperdrive)</li>
+            <li><strong>Health:</strong> Real-time Hull Integrity bar with critical damage warnings</li>
+            <li><strong>Explosions:</strong> Volumetric 3D fireball and shrapnel on ship destruction</li>
+            <li><strong>Orbits & Orrery:</strong> Toggle orbital paths and top-down solar mechanics</li>
           </ul>
           <div id="planet-stats" style={{ display:'none', marginTop:'14px' }}>
             <div style={{ borderTop:'1px solid rgba(79,195,247,0.15)', paddingTop:'12px', marginBottom:'8px', fontSize:'0.72rem', color:'#3a6080', letterSpacing:'1px', textTransform:'uppercase' }}>Planetary Data</div>
@@ -1858,6 +2485,26 @@ const Index = () => {
           <button id="btn-200x">⏭ 200×</button>
         </div>
 
+        {/* COMBAT HUD: HEALTH BAR & ENEMY STATS */}
+        <div id="combat-hud">
+          <div className="combat-card">
+            <div className="combat-header">
+              <span>HULL INTEGRITY</span>
+              <span id="player-health-text" style={{ color: '#00e676' }}>100%</span>
+            </div>
+            <div className="health-bar-container">
+              <div id="player-health-fill" className="health-bar-fill" style={{ width: '100%' }} />
+            </div>
+            <div className="combat-stats">
+              <span>ENEMIES: <strong id="combat-enemies-text" style={{ color: '#ff5252' }}>6</strong></span>
+              <span>SCORE: <strong id="combat-kills-text" style={{ color: '#00e5ff' }}>0</strong></span>
+            </div>
+            <div className="combat-controls-tip">
+              ⚔ SPACE / CLICK / F: CANNONS · 1-4: THRUST
+            </div>
+          </div>
+        </div>
+
         <div id="gravity-indicator">
           <div>⚛ GRAVITY: <span id="grav-status">OFF</span></div>
           <div>Nearest: <span id="grav-body">—</span></div>
@@ -1884,6 +2531,29 @@ const Index = () => {
           </div>
         </div>
 
+      </div>
+
+      {/* COMBAT TARGETING RETICLE */}
+      <div id="combat-crosshair">
+        <div className="ch-circle" />
+      </div>
+
+      {/* DYNAMIC ENEMY 3D HUD TARGET BOXES */}
+      <div id="enemy-hud-container" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 4, display: 'none' }}>
+        {[0, 1, 2, 3, 4, 5].map((i) => (
+          <div
+            key={i}
+            id={`enemy-tag-${i}`}
+            className="enemy-target-tag"
+            style={{ display: 'none' }}
+          >
+            <div className="target-box" />
+            <div className="target-info">
+              <span className="target-name">TIE-DEFENDER #{i + 1}</span>
+              <span id={`enemy-dist-${i}`} className="target-dist">0m</span>
+            </div>
+          </div>
+        ))}
       </div>
 
       {/* TARGET MARKER */}

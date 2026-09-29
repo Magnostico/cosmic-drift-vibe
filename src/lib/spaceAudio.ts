@@ -292,6 +292,96 @@ export class SpaceAudioEngine {
     noiseSrc.stop(t0 + 2.3);
   }
 
+  /** Player high-frequency dual laser cannon blast */
+  playPlayerLaser() {
+    if (!this.ctx || !this.masterGain) return;
+    const ctx = this.ctx;
+    const t0 = ctx.currentTime;
+
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(880, t0);
+    osc.frequency.exponentialRampToValueAtTime(140, t0 + 0.11);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.22, t0);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.12);
+
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(t0);
+    osc.stop(t0 + 0.13);
+  }
+
+  /** Enemy TIE-style green plasma cannon blast */
+  playEnemyLaser() {
+    if (!this.ctx || !this.masterGain) return;
+    const ctx = this.ctx;
+    const t0 = ctx.currentTime;
+
+    const osc = ctx.createOscillator();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(520, t0);
+    osc.frequency.exponentialRampToValueAtTime(90, t0 + 0.14);
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(1200, t0);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.12, t0);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.15);
+
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(t0);
+    osc.stop(t0 + 0.16);
+  }
+
+  /** Shield impact / hull hit deflection */
+  playHitImpact() {
+    if (!this.ctx || !this.masterGain) return;
+    const ctx = this.ctx;
+    const t0 = ctx.currentTime;
+
+    const osc = ctx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(260, t0);
+    osc.frequency.exponentialRampToValueAtTime(60, t0 + 0.15);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.3, t0);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.18);
+
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(t0);
+    osc.stop(t0 + 0.2);
+  }
+
+  /** Target defeated / destroyed chime */
+  playKillScore() {
+    if (!this.ctx || !this.masterGain) return;
+    const ctx = this.ctx;
+    const t0 = ctx.currentTime;
+
+    [587.33, 880, 1174.66].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t0 + idx * 0.05);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.12, t0 + idx * 0.05);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + idx * 0.05 + 0.2);
+
+      osc.connect(gain);
+      gain.connect(this.masterGain!);
+      osc.start(t0 + idx * 0.05);
+      osc.stop(t0 + idx * 0.05 + 0.22);
+    });
+  }
+
   dispose() {
     this.disposed = true;
     try {
