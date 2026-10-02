@@ -443,7 +443,7 @@ const Index = () => {
     sceneSS.add(explosionLight);
 
     // 2. Volumetric 3D Fireball Core (Deforming Organic Plumes Mesh)
-    const fireballGeo = new THREE.IcosahedronGeometry(0.3, 4);
+    const fireballGeo = new THREE.IcosahedronGeometry(0.8, 4);
     // Custom displacement shader for billowing fiery clouds with hot white/yellow core, deep orange edges and smoke dissipation
     const fireballMat = new THREE.ShaderMaterial({
       uniforms: {
@@ -518,8 +518,8 @@ const Index = () => {
           vNoise = n * 0.7 + n2 * 0.3;
 
           // Expansion scale curve: rapid blast then slow billow
-          float expand = pow(uProgress, 0.35) * 4.8;
-          vec3 displaced = position * (1.0 + expand) + normal * (vNoise * (0.6 + expand * 0.4));
+          float expand = pow(max(uProgress, 0.001), 0.35) * 6.5;
+          vec3 displaced = position * (1.0 + expand) + normal * (vNoise * (0.8 + expand * 0.5));
           gl_Position = projectionMatrix * modelViewMatrix * vec4(displaced, 1.0);
         }
       `,
@@ -534,13 +534,13 @@ const Index = () => {
 
         void main() {
           // Heat gradient from core to plume tips
-          float heat = clamp(vNoise + (1.0 - uProgress * 1.2), 0.0, 1.0);
-          vec3 col = mix(uColorDark, uColorFire, smoothstep(0.1, 0.6, heat));
-          col = mix(col, uColorCore, smoothstep(0.65, 0.95, heat));
+          float heat = clamp(vNoise + (1.0 - uProgress * 1.1), 0.0, 1.0);
+          vec3 col = mix(uColorDark, uColorFire, smoothstep(0.05, 0.5, heat));
+          col = mix(col, uColorCore, smoothstep(0.55, 0.9, heat));
 
           float alpha = clamp((1.0 - uProgress) * (1.0 - uProgress), 0.0, 1.0);
-          if (alpha <= 0.01) discard;
-          gl_FragColor = vec4(col * (1.2 + (1.0 - uProgress) * 2.0), alpha * 0.95);
+          if (alpha <= 0.005) discard;
+          gl_FragColor = vec4(col * (1.5 + (1.0 - uProgress) * 2.5), alpha);
         }
       `,
       transparent: true,
@@ -581,11 +581,13 @@ const Index = () => {
       g.addColorStop(0.75, 'rgba(180, 20, 0, 0.3)');
       g.addColorStop(1, 'rgba(0, 0, 0, 0)');
       ctx.fillStyle = g; ctx.fillRect(0, 0, 128, 128);
-      return new THREE.CanvasTexture(c);
+      const tex = new THREE.CanvasTexture(c);
+      tex.needsUpdate = true;
+      return tex;
     })();
 
     const expMat = new THREE.PointsMaterial({
-      size: 0.15, vertexColors: true, map: fireTex,
+      size: 0.7, vertexColors: true, map: fireTex,
       transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
       sizeAttenuation: true
     });
@@ -605,18 +607,18 @@ const Index = () => {
       rotVel: THREE.Vector3;
       life: number;
     }[] = [];
-    const shardGeo = new THREE.TetrahedronGeometry(0.15, 0);
+    const shardGeo = new THREE.TetrahedronGeometry(0.35, 0);
     const shardMat = new THREE.MeshStandardMaterial({
       color: 0x18181f,
       emissive: 0xff3300,
-      emissiveIntensity: 1.5,
+      emissiveIntensity: 2.0,
       roughness: 0.3,
       metalness: 0.95
     });
 
     for (let i = 0; i < DEBRIS_COUNT; i++) {
       const shardMesh = new THREE.Mesh(shardGeo, shardMat.clone());
-      const s = 0.3 + Math.random() * 0.9;
+      const s = 0.5 + Math.random() * 1.4;
       shardMesh.scale.set(s, s * (0.4 + Math.random() * 1.2), s);
       debrisGroup.add(shardMesh);
       debrisPieces.push({
@@ -654,7 +656,7 @@ const Index = () => {
         void main() {
           vec3 vNormal = normalize(normalMatrix * normal);
           vec3 vNormel = normalize(vec3(modelViewMatrix * vec4(position, 1.0)));
-          intensity = pow(0.7 - dot(vNormal, vNormel), 3.0);
+          intensity = pow(max(0.001, 0.7 - dot(vNormal, vNormel)), 3.0);
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }`,
       fragmentShader: `
@@ -710,11 +712,11 @@ const Index = () => {
 
       // 1. Dynamic Flash Light
       explosionLight.position.copy(impactPoint);
-      explosionLight.intensity = isPlayer ? 26.0 : 16.0;
+      explosionLight.intensity = isPlayer ? 45.0 : 25.0;
 
       // 2. 3D Volumetric Fireball Mesh (Billowing Stylized Plumes)
       fireballMesh.position.copy(impactPoint);
-      fireballMesh.scale.set(isPlayer ? 1 : 0.7, isPlayer ? 1 : 0.7, isPlayer ? 1 : 0.7);
+      fireballMesh.scale.set(isPlayer ? 2.8 : 1.8, isPlayer ? 2.8 : 1.8, isPlayer ? 2.8 : 1.8);
       fireballMat.uniforms.uProgress.value = 0.0;
       fireballMat.uniforms.uTime.value = 0.0;
       fireballMesh.visible = true;
@@ -722,12 +724,12 @@ const Index = () => {
       // 3. Shockwave Ring & Expansion Sphere
       shockwaveMesh.position.copy(impactPoint);
       shockwaveMesh.quaternion.copy(isPlayer ? playerShip.quaternion : new THREE.Quaternion().random());
-      shockwaveScale = isPlayer ? 0.3 : 0.2;
+      shockwaveScale = isPlayer ? 0.6 : 0.35;
       shockwaveOpacity = 1.0;
       shockwaveMesh.visible = true;
 
       shockwaveSphere.position.copy(impactPoint);
-      shockwaveSphere.scale.set(0.2, 0.2, 0.2);
+      shockwaveSphere.scale.set(0.6, 0.6, 0.6);
       shockwaveSphereMat.uniforms.opacityVal.value = 1.0;
       shockwaveSphere.visible = true;
 
@@ -1813,13 +1815,20 @@ const Index = () => {
       showToast(`⚔ Modelo Star Wars carregado: ${modelName}`);
     }
 
+    // ── ASSET URL RESOLVER (SUPPORTS GITHUB PAGES, RELATIVE PATHS & ROOT HOSTS) ──
+    const getAssetUrl = (path: string) => {
+      const clean = path.startsWith('/') ? path.slice(1) : path;
+      const base = import.meta.env.BASE_URL || './';
+      return base.endsWith('/') ? `${base}${clean}` : `${base}/${clean}`;
+    };
+
     // ── AUTOMATIC STAR WARS ENEMY FLEET & PLAYER SPACESHIP LOADER ──
     const gltfLoader = new GLTFLoader();
 
     // 1. Auto-load bundled player spaceship model
-    gltfLoader.load('/models/spaceship.glb', (gltf) => {
+    gltfLoader.load(getAssetUrl('models/spaceship.glb'), (gltf) => {
       applyShipModel(gltf.scene);
-      console.log('Player spaceship loaded automatically from /models/spaceship.glb');
+      console.log('Player spaceship loaded automatically from models/spaceship.glb');
     }, undefined, (err) => {
       console.warn('Default spaceship model failed to load:', err);
     });
@@ -1834,7 +1843,7 @@ const Index = () => {
     function tryLoadStarWarsCandidates(index = 0) {
       if (index >= starWarsCandidateFiles.length) {
         // Fallback: auto-clone and style 3D spaceship model with Star Wars Imperial livery & red ion engines
-        gltfLoader.load('/models/spaceship.glb', (gltf) => {
+        gltfLoader.load(getAssetUrl('models/spaceship.glb'), (gltf) => {
           const enemyModel = gltf.scene.clone(true);
           enemyModel.traverse((child: any) => {
             if (child.isMesh && child.material) {
@@ -1856,10 +1865,10 @@ const Index = () => {
 
       const filename = starWarsCandidateFiles[index];
       gltfLoader.load(
-        `/models/${filename}`,
+        getAssetUrl(`models/${filename}`),
         (gltf) => {
           applyEnemyModel(gltf.scene, filename);
-          console.log(`Successfully loaded Star Wars model from /models/${filename}`);
+          console.log(`Successfully loaded Star Wars model from models/${filename}`);
         },
         undefined,
         () => {
@@ -1936,7 +1945,7 @@ const Index = () => {
       if (index >= celestialModels.length) return;
       const cfg = celestialModels[index];
 
-      gltfLoader.load(`/models/${cfg.file}`, (gltf) => {
+      gltfLoader.load(getAssetUrl(`models/${cfg.file}`), (gltf) => {
         let targetMesh: THREE.Mesh | null = null;
         let parentSys: THREE.Object3D | null = null;
         let bodyRef: any = null;
@@ -2510,10 +2519,14 @@ const Index = () => {
 
           const mesh2 = playerShip.getObjectByName('TheShipModel');
           if (mesh2) mesh2.visible = !isExploded;
-          bloomPass.strength = isExploded ? 2.2 : 1.4;
-          const cOff = new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.9 + 0.02, TARGET_SHIP_SIZE * 3.8 + 0.08).applyMatrix4(playerShip.matrixWorld);
+          bloomPass.strength = isExploded ? 2.4 : 1.4;
+          const cOff = isExploded
+            ? new THREE.Vector3(0, TARGET_SHIP_SIZE * 3.2 + 0.8, TARGET_SHIP_SIZE * 7.5 + 2.0).applyMatrix4(playerShip.matrixWorld)
+            : new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.9 + 0.02, TARGET_SHIP_SIZE * 3.8 + 0.08).applyMatrix4(playerShip.matrixWorld);
           camera.position.copy(cOff);
-          const lookTgt = new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.2, -TARGET_SHIP_SIZE * 8 - 0.2).applyMatrix4(playerShip.matrixWorld);
+          const lookTgt = isExploded
+            ? playerShip.position.clone()
+            : new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.2, -TARGET_SHIP_SIZE * 8 - 0.2).applyMatrix4(playerShip.matrixWorld);
           const upVec = new THREE.Vector3(0,1,0).applyQuaternion(playerShip.quaternion);
           if (mesh2 && !isExploded) {
             const sf = new THREE.Vector3(0,0,-1).applyQuaternion(playerShip.quaternion);
@@ -2522,7 +2535,7 @@ const Index = () => {
           const tq = new THREE.Quaternion().setFromRotationMatrix(
             new THREE.Matrix4().lookAt(camera.position, lookTgt, upVec)
           );
-          camera.quaternion.slerp(tq, 0.1);
+          camera.quaternion.slerp(tq, isExploded ? 0.2 : 0.1);
         } else {
           controls.update();
           updateExplosion(dt);
