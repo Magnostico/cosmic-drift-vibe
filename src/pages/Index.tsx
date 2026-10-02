@@ -5,6 +5,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import * as TWEEN from '@tweenjs/tween.js';
 import { SpaceAudioEngine } from '../lib/spaceAudio';
 import '../styles/universe.css';
 
@@ -431,6 +432,137 @@ const Index = () => {
     let enemiesKilled = 0;
     let lastPlayerShotTime = 0;
     const PLAYER_FIRE_COOLDOWN = 0.16; // rapid dual plasma cannons
+
+    // ════════════════════════════════════════════════════════════
+    //  TWEEN.JS COMBAT, DEFLECTOR SHIELD & CINEMATIC CAMERA SYSTEM
+    // ════════════════════════════════════════════════════════════
+    // 1. Weapon Recoil Kickback
+    const recoilState = { z: 0, pitch: 0 };
+    function fireWeaponRecoil() {
+      new TWEEN.Tween(recoilState)
+        .to({ z: 0.007, pitch: -0.012 }, 35)
+        .easing(TWEEN.Easing.Quadratic.Out)
+        .chain(
+          new TWEEN.Tween(recoilState)
+            .to({ z: 0, pitch: 0 }, 90)
+            .easing(TWEEN.Easing.Back.Out)
+        )
+        .start();
+    }
+
+    // 2. Aerodynamic Barrel Roll (Evasive Manoeuvre)
+    let isBarrelRolling = false;
+    const barrelRollState = { z: 0 };
+    function triggerBarrelRoll(direction: 1 | -1) {
+      if (isBarrelRolling || isExploded || !flightModeActive) return;
+      isBarrelRolling = true;
+      initAudio();
+      audio.playTransition();
+      showToast(`⚡ MANOBRA EVASIVA: BARREL ROLL ${direction > 0 ? 'DIREITA' : 'ESQUERDA'}!`);
+      showScorePopup('🛡 EVASÃO: BARREL ROLL!', '#00e5ff');
+
+      barrelRollState.z = 0;
+      new TWEEN.Tween(barrelRollState)
+        .to({ z: direction * Math.PI * 2 }, 550)
+        .easing(TWEEN.Easing.Cubic.Out)
+        .onComplete(() => {
+          barrelRollState.z = 0;
+          isBarrelRolling = false;
+        })
+        .start();
+    }
+
+    // 3. Sniper Aim / Target Focus Zoom
+    let isAimZoomed = false;
+    const fovState = { fov: 60 };
+    let aimZoomTween: any = null;
+    function setAimZoom(active: boolean) {
+      if (isAimZoomed === active || !flightModeActive || isExploded) return;
+      isAimZoomed = active;
+      if (aimZoomTween) aimZoomTween.stop();
+      aimZoomTween = new TWEEN.Tween(fovState)
+        .to({ fov: active ? 36 : 60 }, 280)
+        .easing(TWEEN.Easing.Cubic.Out)
+        .onUpdate(() => {
+          camera.fov = fovState.fov;
+          camera.updateProjectionMatrix();
+        })
+        .start();
+
+      const crosshair = document.getElementById('flight-crosshair');
+      if (crosshair) {
+        crosshair.style.transition = 'transform 0.25s ease, border-color 0.25s ease';
+        crosshair.style.transform = `translate(-50%, -50%) scale(${active ? 1.4 : 1.0})`;
+        crosshair.style.borderColor = active ? '#ff0055' : '#00e5ff';
+      }
+    }
+
+    // 4. Hexagonal Energy Deflector Shield
+    const shieldGeo = new THREE.SphereGeometry(TARGET_SHIP_SIZE * 2.2, 24, 24);
+    const shieldMat = new THREE.MeshBasicMaterial({
+      color: 0x00e5ff,
+      wireframe: true,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+    const shieldMesh = new THREE.Mesh(shieldGeo, shieldMat);
+    shieldMesh.visible = false;
+    playerShip.add(shieldMesh);
+
+    function triggerShieldPulse() {
+      shieldMesh.visible = true;
+      shieldMesh.scale.set(0.65, 0.65, 0.65);
+      shieldMat.opacity = 0.95;
+
+      new TWEEN.Tween(shieldMesh.scale)
+        .to({ x: 1.3, y: 1.3, z: 1.3 }, 320)
+        .easing(TWEEN.Easing.Back.Out)
+        .start();
+
+      new TWEEN.Tween(shieldMat)
+        .to({ opacity: 0 }, 380)
+        .easing(TWEEN.Easing.Quadratic.Out)
+        .onComplete(() => {
+          shieldMesh.visible = false;
+        })
+        .start();
+    }
+
+    // 5. Cinematic Floating Score Popup
+    function showScorePopup(text: string, color = '#00ffcc') {
+      const popup = document.createElement('div');
+      popup.className = 'score-popup-item';
+      popup.innerText = text;
+      popup.style.cssText = `
+        position: fixed;
+        left: 50%;
+        top: 42%;
+        transform: translate(-50%, -50%) scale(0.7);
+        font-family: 'Rajdhani', sans-serif;
+        font-size: 24px;
+        font-weight: 700;
+        color: ${color};
+        text-shadow: 0 0 10px ${color}, 0 0 20px #000;
+        pointer-events: none;
+        z-index: 9999;
+        opacity: 1;
+        letter-spacing: 2px;
+        transition: transform 0.9s cubic-bezier(0.175, 0.885, 0.32, 1.275), opacity 0.9s ease-out;
+      `;
+      document.body.appendChild(popup);
+
+      requestAnimationFrame(() => {
+        popup.style.transform = 'translate(-50%, calc(-50% - 45px)) scale(1.15)';
+        popup.style.opacity = '0';
+      });
+
+      // Guaranteed auto-cleanup
+      setTimeout(() => {
+        if (popup.parentNode) popup.remove();
+      }, 950);
+    }
 
     // ── HIGH-FIDELITY 3D CINEMATIC EXPLOSION SYSTEM (Inspired by Stylized 3D Fireball Mesh & PBR Shaders) ──
     let isExploded = false;
@@ -1465,8 +1597,17 @@ const Index = () => {
       if (e.code==='ArrowRight') keys.right=true;
       if (e.code==='KeyA' || e.key==='a' || e.key==='A') { keys.fire=true; }
       if (e.code==='Space')  { keys.space=true; }
-      if (e.code==='KeyQ')   keys.q=true;
-      if (e.code==='KeyE')   keys.e=true;
+      if (e.code==='KeyQ') {
+        keys.q=true;
+        triggerBarrelRoll(-1);
+      }
+      if (e.code==='KeyE') {
+        keys.e=true;
+        triggerBarrelRoll(1);
+      }
+      if (e.code==='KeyZ' || e.code==='KeyC') {
+        setAimZoom(true);
+      }
       if (e.code==='ShiftLeft'||e.code==='ShiftRight') keys.brake=true;
       if (flightModeActive) {
         const thr: Record<string, [number, string]> = { Digit1:[0.0002,"SCENIC CRUISE"], Digit2:[0.001,"IMPULSE"], Digit3:[0.005,"COMBAT"], Digit4:[0.02,"HYPERDRIVE"] };
@@ -1483,18 +1624,33 @@ const Index = () => {
       if (e.code==='Space')  { keys.space=false; }
       if (e.code==='KeyQ')   keys.q=false;
       if (e.code==='KeyE')   keys.e=false;
+      if (e.code==='KeyZ' || e.code==='KeyC') {
+        setAimZoom(false);
+      }
       if (e.code==='ShiftLeft'||e.code==='ShiftRight') keys.brake=false;
     };
 
     const onMouseDown = (e: MouseEvent) => {
       initAudio();
-      if (flightModeActive && e.button === 0 && !(e.target as HTMLElement).closest('button')) {
-        keys.fire = true;
+      if (flightModeActive) {
+        if (e.button === 0 && !(e.target as HTMLElement).closest('button')) {
+          keys.fire = true;
+        } else if (e.button === 2) {
+          setAimZoom(true);
+        }
       }
     };
 
-    const onMouseUp = () => {
-      keys.fire = false;
+    const onMouseUp = (e: MouseEvent) => {
+      if (e.button === 0) {
+        keys.fire = false;
+      } else if (e.button === 2) {
+        setAimZoom(false);
+      }
+    };
+
+    const onContextMenu = (e: MouseEvent) => {
+      if (flightModeActive) e.preventDefault();
     };
 
     const unlockAudioHandler = () => {
@@ -1505,6 +1661,7 @@ const Index = () => {
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('mousedown', onMouseDown);
     window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('contextmenu', onContextMenu);
     window.addEventListener('pointerdown', unlockAudioHandler);
     window.addEventListener('touchstart', unlockAudioHandler);
 
@@ -1596,23 +1753,20 @@ const Index = () => {
     const TRAVEL_DURATION = 2.0; // seconds
 
     function travelToPlanet(mesh: THREE.Mesh) {
-      if (flightModeActive || isTraveling) return;
+      if (isTraveling) return;
       initAudio();
       audio.playTransition();
 
-      travelTarget = mesh;
-      travelProgress = 0;
-      travelStartPos.copy(camera.position);
-      travelStartTarget.copy(controls.target);
-      isTraveling = true;
+      const d = mesh.userData;
+      const targetName = d.name || 'Celestial Body';
 
       // Set as clicked planet too
+      travelTarget = mesh;
       targetPlanet = mesh;
       targetPlanetData = ssBodies.find((b: any) => b.mesh === mesh);
       cameraLight.intensity = 1.0;
 
-      const d = mesh.userData;
-      document.getElementById('info-title')!.innerText = d.name;
+      document.getElementById('info-title')!.innerText = d.name || 'Celestial Body';
       document.getElementById('info-subtitle')!.innerText = d.type || 'Celestial Body';
       document.getElementById('planet-stats')!.style.display = 'block';
       document.getElementById('stat-mass')!.innerText = d.mass || '—';
@@ -1631,7 +1785,99 @@ const Index = () => {
       const navBtn = document.getElementById('nav-' + d.name);
       if (navBtn) navBtn.classList.add('nav-active');
 
-      showToast("TRAVELING TO " + d.name.toUpperCase());
+      const wp = new THREE.Vector3();
+      mesh.getWorldPosition(wp);
+      const r = mesh.userData.radius || 4;
+
+      if (flightModeActive) {
+        isTraveling = true;
+        showToast(`🌌 HIPERSALTO INICIADO: RUMO A ${targetName.toUpperCase()}!`);
+        showScorePopup(`🌌 WARP 9: ${targetName.toUpperCase()}`, '#ffaa00');
+
+        // Relativistic FOV stretch: 60 -> 105 -> 60 with elastic arrival
+        const fovObj = { fov: 60 };
+        new TWEEN.Tween(fovObj)
+          .to({ fov: 105 }, 480)
+          .easing(TWEEN.Easing.Quadratic.In)
+          .onUpdate(() => {
+            camera.fov = fovObj.fov;
+            camera.updateProjectionMatrix();
+          })
+          .chain(
+            new TWEEN.Tween(fovObj)
+              .to({ fov: 60 }, 750)
+              .easing(TWEEN.Easing.Back.Out)
+              .onUpdate(() => {
+                camera.fov = fovObj.fov;
+                camera.updateProjectionMatrix();
+              })
+              .onComplete(() => {
+                isTraveling = false;
+                showToast(`✅ ÓRBITA ALCANÇADA: ${targetName.toUpperCase()}`);
+              })
+          )
+          .start();
+
+        // Warp spaceship to planet orbit
+        const destPos = new THREE.Vector3(wp.x + r * 3.5, wp.y + r * 0.8, wp.z + r * 3.5);
+        new TWEEN.Tween(playerShip.position)
+          .to({ x: destPos.x, y: destPos.y, z: destPos.z }, 1200)
+          .easing(TWEEN.Easing.Cubic.InOut)
+          .start();
+
+        // Smoothly orient ship towards planet
+        const lookTgt = wp.clone();
+        const curQuat = playerShip.quaternion.clone();
+        const tgtQuat = new THREE.Quaternion().setFromRotationMatrix(
+          new THREE.Matrix4().lookAt(destPos, lookTgt, new THREE.Vector3(0, 1, 0))
+        );
+        const qObj = { t: 0 };
+        new TWEEN.Tween(qObj)
+          .to({ t: 1 }, 1200)
+          .easing(TWEEN.Easing.Cubic.InOut)
+          .onUpdate(() => {
+            playerShip.quaternion.copy(curQuat).slerp(tgtQuat, qObj.t);
+          })
+          .start();
+
+      } else {
+        isTraveling = true;
+        showToast("TRAVELING TO " + targetName.toUpperCase());
+
+        const destPos = new THREE.Vector3(wp.x + r * 3, wp.y + r * 1.5, wp.z + r * 3);
+        const fovObj = { fov: camera.fov };
+
+        new TWEEN.Tween(fovObj)
+          .to({ fov: 85 }, 350)
+          .easing(TWEEN.Easing.Quadratic.In)
+          .onUpdate(() => {
+            camera.fov = fovObj.fov;
+            camera.updateProjectionMatrix();
+          })
+          .chain(
+            new TWEEN.Tween(fovObj)
+              .to({ fov: 60 }, 650)
+              .easing(TWEEN.Easing.Cubic.Out)
+              .onUpdate(() => {
+                camera.fov = fovObj.fov;
+                camera.updateProjectionMatrix();
+              })
+              .onComplete(() => {
+                isTraveling = false;
+              })
+          )
+          .start();
+
+        new TWEEN.Tween(camera.position)
+          .to({ x: destPos.x, y: destPos.y, z: destPos.z }, 1000)
+          .easing(TWEEN.Easing.Cubic.InOut)
+          .start();
+
+        new TWEEN.Tween(controls.target)
+          .to({ x: wp.x, y: wp.y, z: wp.z }, 1000)
+          .easing(TWEEN.Easing.Cubic.InOut)
+          .start();
+      }
     }
 
     // Smooth easing function
@@ -1661,6 +1907,8 @@ const Index = () => {
 
     document.getElementById('btn-back-galaxy')!.addEventListener('click', () => {
       initAudio(); audio.playTransition();
+      document.querySelectorAll('.score-popup-item').forEach(el => el.remove());
+      setAimZoom(false);
       fadeOverlay.style.opacity = '1';
       setTimeout(() => {
         flightModeActive = false; gravityEnabled = false; orreryMode = false;
@@ -1716,6 +1964,8 @@ const Index = () => {
         updateCombatStatsHUD();
         showToast("SPACE COMBAT ENGAGED ── A / SPACE / CLICK / F TO FIRE · 1-4 SPEED");
       } else {
+        document.querySelectorAll('.score-popup-item').forEach(el => el.remove());
+        setAimZoom(false);
         document.getElementById('btn-flight-mode')!.innerText = '🚀 Pilot Ship';
         document.getElementById('btn-flight-mode')!.className = 'btn-success';
         isTransitioning = true;
@@ -2103,6 +2353,7 @@ const Index = () => {
 
     const tick = () => {
       const dt = Math.min(clock.getDelta(), 0.05);
+      TWEEN.update();
 
       if (activeScene === 'milkyWay') {
         controls.update();
@@ -2169,13 +2420,15 @@ const Index = () => {
 
           const mesh = playerShip.getObjectByName('TheShipModel');
           if (mesh) {
-            if (keys.q) mesh.rotation.y += 1.0 * dt;
-            if (keys.e) mesh.rotation.y -= 1.0 * dt;
             let targetBank = 0;
             if (keys.left) targetBank = -0.6 * turnAuthority;
             if (keys.right) targetBank = 0.6 * turnAuthority;
             const bankSpeed = 1.0 + 2.0 * turnAuthority;
             mesh.rotation.z += (targetBank - mesh.rotation.z) * bankSpeed * dt;
+            // Aerodynamic barrel roll and weapon kickback
+            mesh.rotation.z += barrelRollState.z;
+            mesh.position.z = recoilState.z;
+            mesh.rotation.x = recoilState.pitch;
             shipAngularVelocity.y = mesh.rotation.z * -0.6 * turnAuthority;
           }
           shipAngularVelocity.x *= Math.pow(0.01, dt);
@@ -2252,6 +2505,7 @@ const Index = () => {
               lastPlayerShotTime = clock.getElapsedTime();
               initAudio();
               audio.playPlayerLaser();
+              fireWeaponRecoil();
 
               const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(playerShip.quaternion);
               const right = new THREE.Vector3(1, 0, 0).applyQuaternion(playerShip.quaternion);
@@ -2485,6 +2739,7 @@ const Index = () => {
                     updateCombatStatsHUD();
                     audio.playKillScore();
                     triggerExplosion(enemy.mesh.position.clone(), 'Star Wars Fighter', false);
+                    showScorePopup('🎯 +100 PTS • ALVO DESTRUÍDO!', '#00ffcc');
 
                     // Respawn enemy after delay to keep the dogfight intense
                     setTimeout(() => {
@@ -2511,14 +2766,20 @@ const Index = () => {
                 if (d < 0.45) {
                   hit = true;
                   initAudio();
-                  audio.playHitImpact();
-                  spawnLaserImpact(closestPt.clone(), false);
-                  cameraShakeIntensity = Math.max(cameraShakeIntensity, 0.35);
-                  playerHealth -= 5;
-                  updateHealthHUD();
+                  if (isBarrelRolling) {
+                    spawnLaserImpact(closestPt.clone(), false);
+                    showScorePopup('⚡ LASER DESVIADO!', '#00e5ff');
+                  } else {
+                    audio.playHitImpact();
+                    spawnLaserImpact(closestPt.clone(), false);
+                    triggerShieldPulse();
+                    cameraShakeIntensity = Math.max(cameraShakeIntensity, 0.35);
+                    playerHealth -= 5;
+                    updateHealthHUD();
 
-                  if (playerHealth <= 0) {
-                    triggerExplosion(playerShip.position.clone(), 'Imperial Turbolasers', true);
+                    if (playerHealth <= 0) {
+                      triggerExplosion(playerShip.position.clone(), 'Imperial Turbolasers', true);
+                    }
                   }
                 }
               }
