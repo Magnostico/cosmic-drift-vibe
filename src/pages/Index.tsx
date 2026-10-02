@@ -1780,25 +1780,51 @@ const Index = () => {
     function applyShipModel(scene: THREE.Group) {
       playerShip.clear();
       const model = scene;
+      model.traverse((child: any) => {
+        if (child.isMesh && child.material) {
+          child.castShadow = true;
+          child.receiveShadow = true;
+          if (child.material.isMeshStandardMaterial) {
+            child.material.metalness = Math.min(child.material.metalness, 0.45);
+            child.material.roughness = Math.max(child.material.roughness, 0.35);
+            child.material.needsUpdate = true;
+          }
+        }
+      });
       const box = new THREE.Box3().setFromObject(model);
       const sz = new THREE.Vector3(); box.getSize(sz);
-      const scale = TARGET_SHIP_SIZE / Math.max(sz.x, sz.y, sz.z);
+      const scale = (TARGET_SHIP_SIZE * 1.5) / Math.max(sz.x, sz.y, sz.z);
       model.scale.setScalar(scale);
       const sc = new THREE.Box3().setFromObject(model);
       const ctr = new THREE.Vector3(); sc.getCenter(ctr);
       model.position.sub(ctr);
-      const wrap = new THREE.Group(); wrap.add(model); wrap.name = "TheShipModel"; wrap.rotation.y = Math.PI;
+      const wrap = new THREE.Group();
+      wrap.add(model);
+      wrap.name = "TheShipModel";
+      // Facing forward (-Z flight trajectory)
+      wrap.rotation.y = 0;
       playerShip.add(wrap);
-      engineGlow = new THREE.PointLight(0x44aaff, 0, TARGET_SHIP_SIZE*600);
-      engineGlow.position.set(0, 0, TARGET_SHIP_SIZE*0.8);
+      engineGlow = new THREE.PointLight(0x00e5ff, 2.5, TARGET_SHIP_SIZE * 40);
+      engineGlow.position.set(0, 0, TARGET_SHIP_SIZE * 0.6);
       playerShip.add(engineGlow);
     }
 
     function applyEnemyModel(scene: THREE.Group, modelName = 'Star Wars Vessel') {
       const model = scene;
+      model.traverse((child: any) => {
+        if (child.isMesh && child.material) {
+          child.castShadow = true;
+          child.receiveShadow = true;
+          if (child.material.isMeshStandardMaterial) {
+            child.material.metalness = Math.min(child.material.metalness, 0.5);
+            child.material.roughness = Math.max(child.material.roughness, 0.3);
+            child.material.needsUpdate = true;
+          }
+        }
+      });
       const box = new THREE.Box3().setFromObject(model);
       const sz = new THREE.Vector3(); box.getSize(sz);
-      const targetDim = TARGET_SHIP_SIZE * 3.8;
+      const targetDim = TARGET_SHIP_SIZE * 4.2;
       const scale = targetDim / Math.max(sz.x, sz.y, sz.z);
       model.scale.setScalar(scale);
       const sc = new THREE.Box3().setFromObject(model);
@@ -1806,7 +1832,8 @@ const Index = () => {
       model.position.sub(ctr);
       const wrap = new THREE.Group();
       wrap.add(model);
-      wrap.rotation.y = Math.PI;
+      // Facing forward along dogfight trajectory
+      wrap.rotation.y = 0;
 
       customEnemyModelTemplate = wrap;
 
