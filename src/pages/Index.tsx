@@ -8,6 +8,8 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import * as TWEEN from '@tweenjs/tween.js';
 import { SpaceAudioEngine } from '../lib/spaceAudio';
 import '../styles/universe.css';
+import { Button } from '../components/ui/button';
+import { TARGET_SHIP_SIZE, PLAYER_LENGTH, ENEMY_LENGTH, LEGACY_EFFECT_SCALE, EARTH_RADIUS_METERS, EARTH_SCENE_RADIUS, FLIGHT, smoothFactor, steerArcade, integrateArcadeVelocity } from '../lib/flightTuning';
 
 const Index = () => {
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -24,7 +26,8 @@ const Index = () => {
 
     // Scaled micro-vessel size (Sun radius = 12.0, Earth = 1.0, Moon = 0.3)
     // Spaceship size is finely calibrated so it feels like an authentic vessel against planetary scale
-    const TARGET_SHIP_SIZE = 0.045;
+    const animations = new TWEEN.Group();
+    const explosionAnimations = new TWEEN.Group();
     const GLOBAL_SPEED_SCALE = 0.01;
     const G_CONSTANT = 0.0000008;
 
@@ -42,6 +45,9 @@ const Index = () => {
 
     // ── RENDERER ──
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, logarithmicDepthBuffer: true });
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -116,7 +122,7 @@ const Index = () => {
     const composer = new EffectComposer(renderer);
     composer.addPass(new RenderPass(sceneSS, camera));
     const bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(window.innerWidth, window.innerHeight), 1.2, 0.45, 0.75
+      new THREE.Vector2(window.innerWidth, window.innerHeight), 0.45, 0.25, 0.9
     );
     composer.addPass(bloomPass);
 
@@ -423,7 +429,8 @@ const Index = () => {
     const shipAngularVelocity = new THREE.Vector3();
     const keys = { up:false, down:false, left:false, right:false, space:false, q:false, e:false, brake:false, fire:false };
     let engineGlow: THREE.PointLight | null = null;
-    let currentThrust = 0.0002;
+    let currentThrust: number = FLIGHT.thrust[0];
+    let smoothedThrust = 0;
     const gravityAccumulator = new THREE.Vector3();
 
     // ── PLAYER HEALTH & COMBAT STATS ──
@@ -439,11 +446,11 @@ const Index = () => {
     // 1. Weapon Recoil Kickback
     const recoilState = { z: 0, pitch: 0 };
     function fireWeaponRecoil() {
-      new TWEEN.Tween(recoilState)
-        .to({ z: 0.007, pitch: -0.012 }, 35)
+      new TWEEN.Tween(recoilState, animations)
+        .to({ z: PLAYER_LENGTH * 0.03, pitch: -0.012 }, 35)
         .easing(TWEEN.Easing.Quadratic.Out)
         .chain(
-          new TWEEN.Tween(recoilState)
+          new TWEEN.Tween(recoilState, animations)
             .to({ z: 0, pitch: 0 }, 90)
             .easing(TWEEN.Easing.Back.Out)
         )
@@ -462,7 +469,7 @@ const Index = () => {
       showScorePopup('🛡 EVASÃO: BARREL ROLL!', '#00e5ff');
 
       barrelRollState.z = 0;
-      new TWEEN.Tween(barrelRollState)
+      new TWEEN.Tween(barrelRollState, animations)
         .to({ z: direction * Math.PI * 2 }, 550)
         .easing(TWEEN.Easing.Cubic.Out)
         .onComplete(() => {
@@ -480,7 +487,7 @@ const Index = () => {
       if (isAimZoomed === active || !flightModeActive || isExploded) return;
       isAimZoomed = active;
       if (aimZoomTween) aimZoomTween.stop();
-      aimZoomTween = new TWEEN.Tween(fovState)
+      aimZoomTween = new TWEEN.Tween(fovState, animations)
         .to({ fov: active ? 36 : 60 }, 280)
         .easing(TWEEN.Easing.Cubic.Out)
         .onUpdate(() => {
@@ -516,12 +523,12 @@ const Index = () => {
       shieldMesh.scale.set(0.65, 0.65, 0.65);
       shieldMat.opacity = 0.95;
 
-      new TWEEN.Tween(shieldMesh.scale)
+      new TWEEN.Tween(shieldMesh.scale, animations)
         .to({ x: 1.3, y: 1.3, z: 1.3 }, 320)
         .easing(TWEEN.Easing.Back.Out)
         .start();
 
-      new TWEEN.Tween(shieldMat)
+      new TWEEN.Tween(shieldMat, animations)
         .to({ opacity: 0 }, 380)
         .easing(TWEEN.Easing.Quadratic.Out)
         .onComplete(() => {
@@ -571,7 +578,7 @@ const Index = () => {
     const EXPLOSION_RESPAWN_DELAY = 2.0;
 
     // 1. Dynamic Omnidirectional Flash Light
-    const explosionLight = new THREE.PointLight(0xff7711, 0, 200, 0.8);
+    const explosionLight = new THREE.PointLight(0xff7711, 0, ENEMY_LENGTH * 12, 0);
     sceneSS.add(explosionLight);
 
     // 2. Volumetric 3D Fireball Core (Deforming Organic Plumes Mesh)
@@ -809,14 +816,22 @@ const Index = () => {
 
     let shockwaveScale = 0;
     let shockwaveOpacity = 0;
+    let explosionDimension = PLAYER_LENGTH;
+    const explosionEnvelope = { progress: 0 };
 
     function triggerExplosion(impactPoint: THREE.Vector3, impactObjName = 'Space Object', isPlayer = true) {
+      if (isPlayer && isExploded) return;
       explosionTimer = EXPLOSION_RESPAWN_DELAY;
+      explosionDimension = isPlayer ? PLAYER_LENGTH : ENEMY_LENGTH;
+      explosionAnimations.removeAll();
+      explosionEnvelope.progress = 0;
+      new TWEEN.Tween(explosionEnvelope, explosionAnimations)
+        .to({ progress: 1 }, 1950).easing(TWEEN.Easing.Cubic.Out).start();
 
       if (isPlayer) {
         if (isExploded) return;
         isExploded = true;
-        cameraShakeIntensity = 1.35;
+        cameraShakeIntensity = 0.3;
         playerHealth = 0;
         updateHealthHUD();
 
@@ -836,7 +851,7 @@ const Index = () => {
         initAudio();
         audio.playExplosion();
         audio.playKillScore();
-        cameraShakeIntensity = Math.max(cameraShakeIntensity, 0.6);
+        cameraShakeIntensity = Math.max(cameraShakeIntensity, 0.08);
         enemiesKilled++;
         showToast(`🎯 TARGET DESTROYED: ${impactObjName.toUpperCase()} (+100 PTS)`);
         updateCombatStatsHUD();
@@ -844,11 +859,12 @@ const Index = () => {
 
       // 1. Dynamic Flash Light
       explosionLight.position.copy(impactPoint);
-      explosionLight.intensity = isPlayer ? 45.0 : 25.0;
+      explosionLight.distance = explosionDimension * 12;
+      explosionLight.intensity = isPlayer ? 1.6 : 1.0;
 
       // 2. 3D Volumetric Fireball Mesh (Billowing Stylized Plumes)
       fireballMesh.position.copy(impactPoint);
-      fireballMesh.scale.set(isPlayer ? 2.8 : 1.8, isPlayer ? 2.8 : 1.8, isPlayer ? 2.8 : 1.8);
+      fireballMesh.scale.setScalar(explosionDimension * 0.7);
       fireballMat.uniforms.uProgress.value = 0.0;
       fireballMat.uniforms.uTime.value = 0.0;
       fireballMesh.visible = true;
@@ -856,12 +872,14 @@ const Index = () => {
       // 3. Shockwave Ring & Expansion Sphere
       shockwaveMesh.position.copy(impactPoint);
       shockwaveMesh.quaternion.copy(isPlayer ? playerShip.quaternion : new THREE.Quaternion().random());
-      shockwaveScale = isPlayer ? 0.6 : 0.35;
+      shockwaveScale = explosionDimension * 0.4;
+      shockwaveMesh.scale.setScalar(shockwaveScale);
       shockwaveOpacity = 1.0;
       shockwaveMesh.visible = true;
 
       shockwaveSphere.position.copy(impactPoint);
-      shockwaveSphere.scale.set(0.6, 0.6, 0.6);
+      shockwaveSphere.scale.setScalar(explosionDimension * 0.5);
+      expMat.size = explosionDimension * 0.08;
       shockwaveSphereMat.uniforms.opacityVal.value = 1.0;
       shockwaveSphere.visible = true;
 
@@ -870,7 +888,7 @@ const Index = () => {
       for (let i = 0; i < EXP_PARTICLE_COUNT; i++) {
         const theta = Math.random() * Math.PI * 2;
         const phi = Math.acos((Math.random() * 2) - 1);
-        const speed = (isPlayer ? 0.12 : 0.08) + Math.random() * 0.55;
+        const speed = explosionDimension * (0.015 + Math.random() * 0.04);
         const vel = new THREE.Vector3(
           Math.sin(phi) * Math.cos(theta),
           Math.sin(phi) * Math.sin(theta),
@@ -888,7 +906,7 @@ const Index = () => {
         const color = colors[Math.floor(Math.random() * colors.length)];
 
         expParticles.push({
-          pos: impactPoint.clone().add(new THREE.Vector3((Math.random()-0.5)*0.25, (Math.random()-0.5)*0.25, (Math.random()-0.5)*0.25)),
+          pos: impactPoint.clone().add(new THREE.Vector3((Math.random()-0.5)*explosionDimension*0.2, (Math.random()-0.5)*explosionDimension*0.2, (Math.random()-0.5)*explosionDimension*0.2)),
           vel,
           life: 1.0,
           maxLife: 1.0 + Math.random() * 0.9,
@@ -903,8 +921,9 @@ const Index = () => {
       debrisGroup.visible = true;
       debrisPieces.forEach(dp => {
         dp.mesh.position.copy(impactPoint);
+        dp.mesh.scale.setScalar(explosionDimension * (0.03 + Math.random() * 0.05));
         dp.mesh.visible = true;
-        const speed = (isPlayer ? 0.14 : 0.10) + Math.random() * 0.40;
+        const speed = explosionDimension * (0.01 + Math.random() * 0.03);
         dp.vel.set(
           (Math.random() - 0.5) * 2,
           (Math.random() - 0.5) * 2,
@@ -935,14 +954,16 @@ const Index = () => {
         explosionTimer -= dt;
         const elapsed = EXPLOSION_RESPAWN_DELAY - explosionTimer;
         const normProgress = Math.min(1.0, elapsed / 1.95);
+        const expansion = explosionEnvelope.progress;
 
         // Flash Light Decay
-        explosionLight.intensity = Math.max(0, explosionLight.intensity - dt * 12.0);
+        explosionLight.intensity = Math.max(0, explosionLight.intensity - dt * 5.0);
 
         // 1. Update Volumetric 3D Fireball Mesh
         if (fireballMesh.visible) {
           fireballMat.uniforms.uTime.value += dt;
           fireballMat.uniforms.uProgress.value = normProgress;
+          fireballMesh.scale.setScalar(explosionDimension * (0.7 + expansion * 1.5));
           fireballMesh.rotation.y += dt * 1.5;
           fireballMesh.rotation.z += dt * 1.0;
           if (normProgress >= 0.98) fireballMesh.visible = false;
@@ -950,7 +971,7 @@ const Index = () => {
 
         // 2. Expand Shockwave Ring & Corona Sphere
         if (shockwaveMesh.visible) {
-          shockwaveScale += dt * 24.0;
+          shockwaveScale = explosionDimension * (0.4 + expansion * 4);
           shockwaveOpacity = Math.max(0, shockwaveOpacity - dt * 1.6);
           shockwaveMesh.scale.set(shockwaveScale, shockwaveScale, shockwaveScale);
           shockwaveMat.opacity = shockwaveOpacity;
@@ -958,7 +979,7 @@ const Index = () => {
         }
 
         if (shockwaveSphere.visible) {
-          const sphScale = shockwaveSphere.scale.x + dt * 20.0;
+          const sphScale = explosionDimension * (0.5 + expansion * 5);
           shockwaveSphere.scale.set(sphScale, sphScale, sphScale);
           const sphOp = Math.max(0, shockwaveSphereMat.uniforms.opacityVal.value - dt * 1.5);
           shockwaveSphereMat.uniforms.opacityVal.value = sphOp;
@@ -988,6 +1009,7 @@ const Index = () => {
             activeParticles++;
           } else {
             expSizes[i] = 0;
+            expPos[i*3] = 1e6; expPos[i*3+1] = 1e6; expPos[i*3+2] = 1e6;
           }
         }
         expGeo.attributes.position.needsUpdate = true;
@@ -1026,7 +1048,7 @@ const Index = () => {
       // Dynamic Camera Shake Decay
       if (cameraShakeIntensity > 0) {
         cameraShakeIntensity = Math.max(0, cameraShakeIntensity - dt * 1.4);
-        const shake = cameraShakeIntensity * 0.32;
+        const shake = cameraShakeIntensity * PLAYER_LENGTH * 0.2;
         camera.position.x += (Math.random() - 0.5) * shake;
         camera.position.y += (Math.random() - 0.5) * shake;
         camera.position.z += (Math.random() - 0.5) * shake;
@@ -1103,7 +1125,7 @@ const Index = () => {
     })();
 
     const trailMat = new THREE.PointsMaterial({
-      size: 0.08, vertexColors: true, map: trailTex,
+      size: TARGET_SHIP_SIZE * 0.12, vertexColors: true, map: trailTex,
       transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
       sizeAttenuation: true
     });
@@ -1114,6 +1136,7 @@ const Index = () => {
       trailParticles.push({ pos: new THREE.Vector3(), life: 0, maxLife: 0 });
     }
     let trailIndex = 0;
+    let trailEmission = 0;
 
     function spawnTrailParticle() {
       const exhaust = new THREE.Vector3(0, 0, TARGET_SHIP_SIZE * 0.55).applyMatrix4(playerShip.matrixWorld);
@@ -1132,11 +1155,12 @@ const Index = () => {
         trailPos[i*3] = p.pos.x;
         trailPos[i*3+1] = p.pos.y;
         trailPos[i*3+2] = p.pos.z;
-        trailSizes[i] = t * 0.06;
+        trailSizes[i] = t * TARGET_SHIP_SIZE * 0.12;
         const hot = t > 0.7;
         trailCol[i*3] = hot ? 0.5 : t * 0.1;
         trailCol[i*3+1] = hot ? 0.8*t : t * 0.5;
         trailCol[i*3+2] = t;
+        if (t <= 0) { trailPos[i*3] = 1e6; trailPos[i*3+1] = 1e6; trailPos[i*3+2] = 1e6; }
       }
       trailGeo.attributes.position.needsUpdate = true;
       trailGeo.attributes.color.needsUpdate = true;
@@ -1211,7 +1235,7 @@ const Index = () => {
       shipMeshGroup.add(nozzleRight);
 
       // Rear Engine Light
-      engineGlow = new THREE.PointLight(0x00ddff, 0.4, TARGET_SHIP_SIZE * 15);
+      engineGlow = new THREE.PointLight(0x00ddff, 0.3, TARGET_SHIP_SIZE * 8, 0);
       engineGlow.position.set(0, 0, TARGET_SHIP_SIZE * 0.5);
       shipMeshGroup.add(engineGlow);
 
@@ -1255,11 +1279,11 @@ const Index = () => {
     const MAX_LASERS = 140;
 
     // Player Neon Cyan Plasma & Glowing Core
-    const playerLaserCoreGeo = new THREE.CylinderGeometry(0.0022, 0.0022, 0.18, 8);
+    const playerLaserCoreGeo = new THREE.CylinderGeometry(TARGET_SHIP_SIZE * 0.025, TARGET_SHIP_SIZE * 0.025, TARGET_SHIP_SIZE * 2, 8);
     playerLaserCoreGeo.rotateX(Math.PI / 2);
     const playerLaserCoreMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
 
-    const playerLaserHaloGeo = new THREE.CylinderGeometry(0.0065, 0.0065, 0.22, 8);
+    const playerLaserHaloGeo = new THREE.CylinderGeometry(TARGET_SHIP_SIZE * 0.065, TARGET_SHIP_SIZE * 0.065, TARGET_SHIP_SIZE * 2.2, 8);
     playerLaserHaloGeo.rotateX(Math.PI / 2);
     const playerLaserHaloMat = new THREE.MeshBasicMaterial({
       color: 0x00e5ff,
@@ -1269,11 +1293,11 @@ const Index = () => {
     });
 
     // Enemy Green Plasma Cannon
-    const enemyLaserCoreGeo = new THREE.CylinderGeometry(0.0025, 0.0025, 0.20, 8);
+    const enemyLaserCoreGeo = new THREE.CylinderGeometry(TARGET_SHIP_SIZE * 0.03, TARGET_SHIP_SIZE * 0.03, TARGET_SHIP_SIZE * 2.2, 8);
     enemyLaserCoreGeo.rotateX(Math.PI / 2);
     const enemyLaserCoreMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
 
-    const enemyLaserHaloGeo = new THREE.CylinderGeometry(0.0075, 0.0075, 0.24, 8);
+    const enemyLaserHaloGeo = new THREE.CylinderGeometry(TARGET_SHIP_SIZE * 0.07, TARGET_SHIP_SIZE * 0.07, TARGET_SHIP_SIZE * 2.4, 8);
     enemyLaserHaloGeo.rotateX(Math.PI / 2);
     const enemyLaserHaloMat = new THREE.MeshBasicMaterial({
       color: 0x00ff66,
@@ -1283,7 +1307,7 @@ const Index = () => {
     });
 
     // Muzzle Flash Dynamic Light
-    const muzzleFlashLight = new THREE.PointLight(0x00e5ff, 0, 15, 2.0);
+    const muzzleFlashLight = new THREE.PointLight(0x00e5ff, 0, PLAYER_LENGTH * 4, 0);
     playerShip.add(muzzleFlashLight);
 
     // Laser Impact Plasma Sparks System (150 particles pool)
@@ -1306,7 +1330,7 @@ const Index = () => {
     impactGeo.setAttribute('size', new THREE.BufferAttribute(impactSizes, 1));
 
     const impactMat = new THREE.PointsMaterial({
-      size: 0.08,
+      size: TARGET_SHIP_SIZE * 0.08,
       vertexColors: true,
       transparent: true,
       blending: THREE.AdditiveBlending,
@@ -1325,7 +1349,7 @@ const Index = () => {
           (Math.random() - 0.5) * 2,
           (Math.random() - 0.5) * 2,
           (Math.random() - 0.5) * 2
-        ).normalize().multiplyScalar(0.08 + Math.random() * 0.22);
+        ).normalize().multiplyScalar(TARGET_SHIP_SIZE * (0.08 + Math.random() * 0.22));
 
         if (impactSparks.length < IMPACT_MAX) {
           impactSparks.push({
@@ -1365,6 +1389,7 @@ const Index = () => {
             impactCol[i * 3 + 2] = sp.color.b * t;
           } else {
             impactSizes[i] = 0;
+            impactPos[i*3] = 1e6; impactPos[i*3+1] = 1e6; impactPos[i*3+2] = 1e6;
           }
         } else {
           impactSizes[i] = 0;
@@ -1471,7 +1496,7 @@ const Index = () => {
       enemyGroup.add(viewport);
 
       // Red Cockpit Point Light (Illuminates the fighter's front in deep space)
-      const cockpitGlow = new THREE.PointLight(0xff1744, 1.2, scale * 8);
+      const cockpitGlow = new THREE.PointLight(0xff1744, 0.2, scale * 3, 0);
       cockpitGlow.position.set(0, 0, -scale * 0.3);
       enemyGroup.add(cockpitGlow);
 
@@ -1523,7 +1548,7 @@ const Index = () => {
       enemyGroup.add(engineMesh);
 
       // High Intensity Red Ion Engine Exhaust Glow
-      const engLight = new THREE.PointLight(0xff2200, 2.0, scale * 18);
+      const engLight = new THREE.PointLight(0xff2200, 0.3, scale * 4, 0);
       engLight.position.set(0, 0, scale * 0.32);
       enemyGroup.add(engLight);
 
@@ -1605,12 +1630,12 @@ const Index = () => {
         keys.e=true;
         triggerBarrelRoll(1);
       }
-      if (e.code==='KeyZ' || e.code==='KeyC') {
+      if (e.code==='KeyZ') {
         setAimZoom(true);
       }
       if (e.code==='ShiftLeft'||e.code==='ShiftRight') keys.brake=true;
       if (flightModeActive) {
-        const thr: Record<string, [number, string]> = { Digit1:[0.0002,"SCENIC CRUISE"], Digit2:[0.001,"IMPULSE"], Digit3:[0.005,"COMBAT"], Digit4:[0.02,"HYPERDRIVE"] };
+        const thr: Record<string, [number, string]> = { Digit1:[FLIGHT.thrust[0],"SCENIC CRUISE"], Digit2:[FLIGHT.thrust[1],"IMPULSE"], Digit3:[FLIGHT.thrust[2],"COMBAT"], Digit4:[FLIGHT.thrust[3],"HYPERDRIVE"] };
         if (thr[e.code]) { currentThrust = thr[e.code][0]; showToast("THRUST: "+thr[e.code][1]); audio.playGearShift(Object.keys(thr).indexOf(e.code)+1); }
       }
     };
@@ -1624,7 +1649,7 @@ const Index = () => {
       if (e.code==='Space')  { keys.space=false; }
       if (e.code==='KeyQ')   keys.q=false;
       if (e.code==='KeyE')   keys.e=false;
-      if (e.code==='KeyZ' || e.code==='KeyC') {
+      if (e.code==='KeyZ') {
         setAimZoom(false);
       }
       if (e.code==='ShiftLeft'||e.code==='ShiftRight') keys.brake=false;
@@ -1657,6 +1682,12 @@ const Index = () => {
       initAudio();
     };
 
+    const resetFlightInput = () => {
+      Object.keys(keys).forEach(key => { keys[key as keyof typeof keys] = false; });
+      audio.updateThrust(0);
+      setAimZoom(false);
+    };
+    window.addEventListener('blur', resetFlightInput);
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('mousedown', onMouseDown);
@@ -1785,104 +1816,45 @@ const Index = () => {
       const navBtn = document.getElementById('nav-' + d.name);
       if (navBtn) navBtn.classList.add('nav-active');
 
-      const wp = new THREE.Vector3();
-      mesh.getWorldPosition(wp);
-      const r = mesh.userData.radius || 4;
-
-      if (flightModeActive) {
-        isTraveling = true;
-        showToast(`🌌 HIPERSALTO INICIADO: RUMO A ${targetName.toUpperCase()}!`);
-        showScorePopup(`🌌 WARP 9: ${targetName.toUpperCase()}`, '#ffaa00');
-
-        // Relativistic FOV stretch: 60 -> 105 -> 60 with elastic arrival
-        const fovObj = { fov: 60 };
-        new TWEEN.Tween(fovObj)
-          .to({ fov: 105 }, 480)
-          .easing(TWEEN.Easing.Quadratic.In)
-          .onUpdate(() => {
-            camera.fov = fovObj.fov;
-            camera.updateProjectionMatrix();
-          })
-          .chain(
-            new TWEEN.Tween(fovObj)
-              .to({ fov: 60 }, 750)
-              .easing(TWEEN.Easing.Back.Out)
-              .onUpdate(() => {
-                camera.fov = fovObj.fov;
-                camera.updateProjectionMatrix();
-              })
-              .onComplete(() => {
-                isTraveling = false;
-                showToast(`✅ ÓRBITA ALCANÇADA: ${targetName.toUpperCase()}`);
-              })
-          )
-          .start();
-
-        // Warp spaceship to planet orbit
-        const destPos = new THREE.Vector3(wp.x + r * 3.5, wp.y + r * 0.8, wp.z + r * 3.5);
-        new TWEEN.Tween(playerShip.position)
-          .to({ x: destPos.x, y: destPos.y, z: destPos.z }, 1200)
-          .easing(TWEEN.Easing.Cubic.InOut)
-          .start();
-
-        // Smoothly orient ship towards planet
-        const lookTgt = wp.clone();
-        const curQuat = playerShip.quaternion.clone();
-        const tgtQuat = new THREE.Quaternion().setFromRotationMatrix(
-          new THREE.Matrix4().lookAt(destPos, lookTgt, new THREE.Vector3(0, 1, 0))
-        );
-        const qObj = { t: 0 };
-        new TWEEN.Tween(qObj)
-          .to({ t: 1 }, 1200)
-          .easing(TWEEN.Easing.Cubic.InOut)
-          .onUpdate(() => {
-            playerShip.quaternion.copy(curQuat).slerp(tgtQuat, qObj.t);
-          })
-          .start();
-
-      } else {
-        isTraveling = true;
-        showToast("TRAVELING TO " + targetName.toUpperCase());
-
-        const destPos = new THREE.Vector3(wp.x + r * 3, wp.y + r * 1.5, wp.z + r * 3);
-        const fovObj = { fov: camera.fov };
-
-        new TWEEN.Tween(fovObj)
-          .to({ fov: 85 }, 350)
-          .easing(TWEEN.Easing.Quadratic.In)
-          .onUpdate(() => {
-            camera.fov = fovObj.fov;
-            camera.updateProjectionMatrix();
-          })
-          .chain(
-            new TWEEN.Tween(fovObj)
-              .to({ fov: 60 }, 650)
-              .easing(TWEEN.Easing.Cubic.Out)
-              .onUpdate(() => {
-                camera.fov = fovObj.fov;
-                camera.updateProjectionMatrix();
-              })
-              .onComplete(() => {
-                isTraveling = false;
-              })
-          )
-          .start();
-
-        new TWEEN.Tween(camera.position)
-          .to({ x: destPos.x, y: destPos.y, z: destPos.z }, 1000)
-          .easing(TWEEN.Easing.Cubic.InOut)
-          .start();
-
-        new TWEEN.Tween(controls.target)
-          .to({ x: wp.x, y: wp.y, z: wp.z }, 1000)
-          .easing(TWEEN.Easing.Cubic.InOut)
-          .start();
-      }
-    }
-
-    // Smooth easing function
-    function easeInOutCubic(t: number): number {
-      return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+      const progress = { t: 0 };
+      const startPosition = (flightModeActive ? playerShip.position : camera.position).clone();
+      const startTarget = controls.target.clone();
+      const startOrientation = playerShip.quaternion.clone();
+      const startFov = camera.fov;
+      isTraveling = true;
+      isTransitioning = false;
+      shipVelocity.set(0, 0, 0);
+      shipAngularVelocity.set(0, 0, 0);
+      controls.enabled = false;
+      showToast("TRAVELING TO " + targetName.toUpperCase());
+      new TWEEN.Tween(progress, animations)
+        .to({ t: 1 }, TRAVEL_DURATION * 1000)
+        .easing(TWEEN.Easing.Quintic.InOut)
+        .onUpdate(() => {
+          const wp = mesh.getWorldPosition(new THREE.Vector3());
+          const r = mesh.userData.radius || 4;
+          const destination = wp.clone().add(new THREE.Vector3(r * 3, r * 1.5, r * 3));
+          if (flightModeActive) {
+            playerShip.position.lerpVectors(startPosition, destination, progress.t);
+            const orientation = new THREE.Quaternion().setFromRotationMatrix(
+              new THREE.Matrix4().lookAt(destination, wp, new THREE.Vector3(0, 1, 0))
+            );
+            playerShip.quaternion.copy(startOrientation).slerp(orientation, progress.t);
+          } else {
+            camera.position.lerpVectors(startPosition, destination, progress.t);
+            controls.target.lerpVectors(startTarget, wp, progress.t);
+            camera.lookAt(controls.target);
+          }
+          camera.fov = startFov + Math.sin(progress.t * Math.PI) * 8;
+          camera.updateProjectionMatrix();
+        })
+        .onComplete(() => {
+          isTraveling = false;
+          controls.enabled = !flightModeActive;
+          camera.fov = startFov;
+          camera.updateProjectionMatrix();
+          showToast("ARRIVED: " + targetName.toUpperCase());
+        }).start();
     }
 
     function initSolarSystem() {
@@ -1941,6 +1913,7 @@ const Index = () => {
       initAudio();
       flightModeActive = !flightModeActive;
       audio.playToggle(flightModeActive);
+      resetFlightInput();
       controls.enabled = !flightModeActive;
       targetPlanet = null;
       document.getElementById('btn-back-system')!.style.display = 'none';
@@ -1958,7 +1931,7 @@ const Index = () => {
       if (flightModeActive) {
         document.getElementById('btn-flight-mode')!.innerText = '✖ Exit Flight';
         document.getElementById('btn-flight-mode')!.className = 'btn-danger';
-        const off = new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.9 + 0.02, TARGET_SHIP_SIZE * 3.8 + 0.08).applyMatrix4(playerShip.matrixWorld);
+        const off = new THREE.Vector3(0, TARGET_SHIP_SIZE * 1.35, TARGET_SHIP_SIZE * 5.6).applyMatrix4(playerShip.matrixWorld);
         camera.position.copy(off);
         updateHealthHUD();
         updateCombatStatsHUD();
@@ -2029,6 +2002,7 @@ const Index = () => {
 
     function applyShipModel(scene: THREE.Group) {
       playerShip.clear();
+      playerShip.add(shieldMesh, muzzleFlashLight);
       const model = scene;
       model.traverse((child: any) => {
         if (child.isMesh && child.material) {
@@ -2054,7 +2028,7 @@ const Index = () => {
       // Facing forward (-Z flight trajectory)
       wrap.rotation.y = 0;
       playerShip.add(wrap);
-      engineGlow = new THREE.PointLight(0x00e5ff, 2.5, TARGET_SHIP_SIZE * 40);
+      engineGlow = new THREE.PointLight(0x00e5ff, 0.3, TARGET_SHIP_SIZE * 8, 0);
       engineGlow.position.set(0, 0, TARGET_SHIP_SIZE * 0.6);
       playerShip.add(engineGlow);
     }
@@ -2353,11 +2327,12 @@ const Index = () => {
 
     const tick = () => {
       const dt = Math.min(clock.getDelta(), 0.05);
-      TWEEN.update();
+      animations.update(performance.now());
+      explosionAnimations.update(performance.now());
 
       if (activeScene === 'milkyWay') {
         controls.update();
-        mwGroup.rotation.y += 0.0002;
+        mwGroup.rotation.y += 0.012 * dt;
         const sp = anchor.position.clone().project(camera);
         const mk = document.getElementById('target-marker')!;
         mk.style.left = `${(sp.x*.5+.5)*window.innerWidth}px`;
@@ -2406,57 +2381,29 @@ const Index = () => {
         // Flight physics
         if (flightModeActive) {
           const currentSpeed = shipVelocity.length();
-          let gearLevel = 1;
-          if (currentThrust >= 0.005) gearLevel = 4;
-          else if (currentThrust >= 0.001) gearLevel = 3;
-          else if (currentThrust >= 0.0002) gearLevel = 2;
-          const theoreticalMax = currentThrust * 300;
-          const movementRatio = Math.min(currentSpeed / theoreticalMax, 1.0) || 0;
-          const turnAuthority = movementRatio * (gearLevel * 0.25);
-          const pitchAccel = 0.4 * turnAuthority * dt;
-
-          if (keys.up) shipAngularVelocity.x += pitchAccel;
-          if (keys.down) shipAngularVelocity.x -= pitchAccel;
-
+          const gearLevel = Math.max(1, FLIGHT.thrust.findIndex(value => value === currentThrust) + 1);
           const mesh = playerShip.getObjectByName('TheShipModel');
+          if (!isExploded && !isTraveling) {
+            steerArcade(playerShip.quaternion, shipAngularVelocity, keys, dt);
+          }
           if (mesh) {
-            let targetBank = 0;
-            if (keys.left) targetBank = -0.6 * turnAuthority;
-            if (keys.right) targetBank = 0.6 * turnAuthority;
-            const bankSpeed = 1.0 + 2.0 * turnAuthority;
-            mesh.rotation.z += (targetBank - mesh.rotation.z) * bankSpeed * dt;
-            // Aerodynamic barrel roll and weapon kickback
-            mesh.rotation.z += barrelRollState.z;
+            const targetBank = (Number(keys.right) - Number(keys.left)) * 0.35;
+            mesh.rotation.z = THREE.MathUtils.lerp(mesh.rotation.z - barrelRollState.z, targetBank, smoothFactor(8, dt)) + barrelRollState.z;
             mesh.position.z = recoilState.z;
             mesh.rotation.x = recoilState.pitch;
-            shipAngularVelocity.y = mesh.rotation.z * -0.6 * turnAuthority;
           }
-          shipAngularVelocity.x *= Math.pow(0.01, dt);
-          const dq = new THREE.Quaternion().setFromEuler(new THREE.Euler(
-            shipAngularVelocity.x * dt * 60,
-            shipAngularVelocity.y * dt * 60,
-            0, 'YXZ'
-          ));
-          playerShip.quaternion.multiply(dq).normalize();
-
-          let targetGlow = 0;
-          if (keys.space) {
-            const dir = new THREE.Vector3(0,0,-1).applyQuaternion(playerShip.quaternion);
-            shipVelocity.add(dir.multiplyScalar(currentThrust * 60 * dt));
-            targetGlow = 2.5;
-            for (let i = 0; i < 3; i++) spawnTrailParticle();
-            audio.updateThrust(Math.min(currentThrust / 0.02, 1));
-          } else if (keys.brake) {
-            shipVelocity.multiplyScalar(Math.pow(0.1, dt));
-            targetGlow = 0.8;
-            audio.updateThrust(0.15);
-          } else {
-            audio.updateThrust(0);
+          smoothedThrust += ((keys.space && !keys.brake && !isTraveling && !isExploded ? currentThrust : 0) - smoothedThrust) * smoothFactor(FLIGHT.throttleResponse, dt);
+          if (!isExploded && !isTraveling) {
+            integrateArcadeVelocity(shipVelocity, playerShip.quaternion, keys, smoothedThrust, dt);
           }
-
+          const targetGlow = smoothedThrust > 0 ? 0.5 : 0;
+          if (smoothedThrust > 0 && !isTraveling && !isExploded) {
+            trailEmission += dt * 90;
+            while (trailEmission >= 1) { spawnTrailParticle(); trailEmission -= 1; }
+          }
+          audio.updateThrust(isTraveling || isExploded ? 0 : Math.min(smoothedThrust / FLIGHT.thrust[3], 1));
           if (engineGlow) {
-            engineGlow.intensity += (targetGlow - engineGlow.intensity) * 10 * dt;
-            engineGlow.visible = true;
+            engineGlow.intensity += (targetGlow - engineGlow.intensity) * smoothFactor(10, dt);
           }
 
           // Newtonian gravity
@@ -2481,23 +2428,15 @@ const Index = () => {
               if (dist < nearestDist) { nearestDist = dist; nearestBody = b.mesh.userData.name||'?'; nearestForce = force; }
             });
 
-            shipVelocity.add(gravityAccumulator.multiplyScalar(dt));
+            if (!isTraveling && !isExploded) shipVelocity.addScaledVector(gravityAccumulator, dt);
 
             document.getElementById('grav-body')!.innerText = nearestBody || '—';
             document.getElementById('grav-force')!.innerText = (nearestForce * 1e6).toFixed(3);
             document.getElementById('fhud-grav')!.innerText = (nearestForce * 1e6).toFixed(3);
           }
 
-          if (currentSpeed > 0.000001) {
-            const fwd = new THREE.Vector3(0,0,-1).applyQuaternion(playerShip.quaternion);
-            const fwdSpeed = shipVelocity.dot(fwd);
-            const pureFwd = fwd.clone().multiplyScalar(fwdSpeed);
-            shipVelocity.lerp(pureFwd, 4.0 * dt);
-          }
-          shipVelocity.multiplyScalar(Math.pow(0.8, dt));
-
           if (!isExploded) {
-            playerShip.position.add(shipVelocity);
+            if (!isTraveling) playerShip.position.addScaledVector(shipVelocity, dt * 60);
             playerShip.updateMatrixWorld(true);
 
             // ── PLAYER FIRING LASER CANNONS ──
@@ -2576,7 +2515,7 @@ const Index = () => {
               if (rXZ >= 39.0 && rXZ <= 48.0 && Math.abs(shipPos.y) <= 1.8) {
                 for (let i = 0; i < asteroidBodies.length; i += 3) {
                   const ast = asteroidBodies[i];
-                  if (shipPos.distanceTo(ast.pos) < (ast.radius + shipRadius + 0.18)) {
+                  if (shipPos.distanceTo(ast.pos) < (ast.radius + shipRadius)) {
                     triggerExplosion(shipPos.clone(), 'Asteroid Impact', true);
                     break;
                   }
@@ -2622,7 +2561,7 @@ const Index = () => {
                 audio.playEnemyLaser();
 
                 // Fire from 3 tri-wing cannon tips
-                const shootOrigin = enemy.mesh.position.clone().addScaledVector(forward, 0.1);
+                const shootOrigin = enemy.mesh.position.clone().addScaledVector(forward, ENEMY_LENGTH * 0.55);
                 // Slight aim scatter
                 const aimDir = toPlayer.clone().normalize();
                 aimDir.x += (Math.random() - 0.5) * 0.06;
@@ -2701,7 +2640,7 @@ const Index = () => {
 
                 const distEl = document.getElementById(`enemy-dist-${idx}`);
                 if (distEl) {
-                  distEl.innerText = `${(dist * 100).toFixed(0)}m · ${Math.round((enemy.health / enemy.maxHealth) * 100)}%`;
+                  distEl.innerText = `${(dist * EARTH_RADIUS_METERS / EARTH_SCENE_RADIUS).toFixed(0)}m · ${Math.round((enemy.health / enemy.maxHealth) * 100)}%`;
                 }
               }
             });
@@ -2724,7 +2663,7 @@ const Index = () => {
                 if (!enemy.active) continue;
                 sweepLine.closestPointToPoint(enemy.mesh.position, true, closestPt);
                 const d = closestPt.distanceTo(enemy.mesh.position);
-                if (d < 0.75) {
+                if (d < ENEMY_LENGTH * 0.55) {
                   hit = true;
                   initAudio();
                   audio.playHitImpact();
@@ -2735,9 +2674,7 @@ const Index = () => {
                   if (enemy.health <= 0) {
                     enemy.active = false;
                     enemy.mesh.visible = false;
-                    enemiesKilled++;
-                    updateCombatStatsHUD();
-                    audio.playKillScore();
+
                     triggerExplosion(enemy.mesh.position.clone(), 'Star Wars Fighter', false);
                     showScorePopup('🎯 +100 PTS • ALVO DESTRUÍDO!', '#00ffcc');
 
@@ -2763,7 +2700,7 @@ const Index = () => {
               if (!isExploded) {
                 sweepLine.closestPointToPoint(playerShip.position, true, closestPt);
                 const d = closestPt.distanceTo(playerShip.position);
-                if (d < 0.45) {
+                if (d < PLAYER_LENGTH * 0.45) {
                   hit = true;
                   initAudio();
                   if (isBarrelRolling) {
@@ -2807,14 +2744,14 @@ const Index = () => {
 
           const mesh2 = playerShip.getObjectByName('TheShipModel');
           if (mesh2) mesh2.visible = !isExploded;
-          bloomPass.strength = isExploded ? 2.4 : 1.4;
+          bloomPass.strength = isExploded ? 0.65 : 0.45;
           const cOff = isExploded
-            ? new THREE.Vector3(0, TARGET_SHIP_SIZE * 3.2 + 0.8, TARGET_SHIP_SIZE * 7.5 + 2.0).applyMatrix4(playerShip.matrixWorld)
-            : new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.9 + 0.02, TARGET_SHIP_SIZE * 3.8 + 0.08).applyMatrix4(playerShip.matrixWorld);
-          camera.position.copy(cOff);
+            ? new THREE.Vector3(0, TARGET_SHIP_SIZE * 4, TARGET_SHIP_SIZE * 10).applyMatrix4(playerShip.matrixWorld)
+            : new THREE.Vector3(0, TARGET_SHIP_SIZE * 1.35, TARGET_SHIP_SIZE * 5.6).applyMatrix4(playerShip.matrixWorld);
+          camera.position.lerp(cOff, smoothFactor(FLIGHT.cameraResponse, dt));
           const lookTgt = isExploded
             ? playerShip.position.clone()
-            : new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.2, -TARGET_SHIP_SIZE * 8 - 0.2).applyMatrix4(playerShip.matrixWorld);
+            : new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.2, -TARGET_SHIP_SIZE * 12).applyMatrix4(playerShip.matrixWorld);
           const upVec = new THREE.Vector3(0,1,0).applyQuaternion(playerShip.quaternion);
           if (mesh2 && !isExploded) {
             const sf = new THREE.Vector3(0,0,-1).applyQuaternion(playerShip.quaternion);
@@ -2823,36 +2760,20 @@ const Index = () => {
           const tq = new THREE.Quaternion().setFromRotationMatrix(
             new THREE.Matrix4().lookAt(camera.position, lookTgt, upVec)
           );
-          camera.quaternion.slerp(tq, isExploded ? 0.2 : 0.1);
+          camera.quaternion.slerp(tq, smoothFactor(FLIGHT.cameraResponse, dt));
         } else {
           controls.update();
           updateExplosion(dt);
         }
 
-        // Smooth travel animation
-        if (isTraveling && travelTarget) {
-          travelProgress += dt / TRAVEL_DURATION;
-          if (travelProgress >= 1) {
-            travelProgress = 1;
-            isTraveling = false;
-            isTransitioning = false;
-          }
-          const t = easeInOutCubic(Math.min(travelProgress, 1));
-          const wp = new THREE.Vector3(); travelTarget.getWorldPosition(wp);
-          const r = travelTarget.userData.radius || 4;
-          const destPos = new THREE.Vector3(wp.x + r * 3, wp.y + r * 1.5, wp.z + r * 3);
-
-          camera.position.lerpVectors(travelStartPos, destPos, t);
-          controls.target.lerpVectors(travelStartTarget, wp, t);
-        }
-        // Focus on clicked planet (non-travel)
-        else if (targetPlanet && !flightModeActive) {
+        // Tween.js owns travel; follow the body only after arrival.
+        if (targetPlanet && !flightModeActive && !isTraveling) {
           const wp = new THREE.Vector3(); targetPlanet.getWorldPosition(wp);
           controls.target.copy(wp);
           if (isTransitioning) {
             const r = targetPlanet.userData.radius || 4;
             const dp = new THREE.Vector3(wp.x+r*3, wp.y+r*1.5, wp.z+r*3);
-            camera.position.lerp(dp, 0.05);
+            camera.position.lerp(dp, smoothFactor(3, dt));
             if (camera.position.distanceTo(dp) < 0.5) isTransitioning = false;
           }
           if (targetPlanetData && targetPlanetData.type === 'planet') {
@@ -2871,7 +2792,7 @@ const Index = () => {
           }
         } else if (isTransitioning && !flightModeActive && !orreryMode) {
           const dp = new THREE.Vector3(controls.target.x, 60, controls.target.z+120);
-          camera.position.lerp(dp, 0.05);
+          camera.position.lerp(dp, smoothFactor(3, dt));
           if (camera.position.distanceTo(dp) < 1.0) isTransitioning = false;
         }
 
@@ -2887,6 +2808,10 @@ const Index = () => {
     return () => {
       cancelAnimationFrame(animFrameId);
       window.removeEventListener('keydown', onKeyDown);
+      animations.removeAll();
+      explosionAnimations.removeAll();
+      window.removeEventListener('blur', resetFlightInput);
+      window.removeEventListener('contextmenu', onContextMenu);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('mouseup', onMouseUp);
@@ -2912,7 +2837,7 @@ const Index = () => {
       {/* MILKY WAY UI */}
       <div id="ui-milky-way" className="ui-layer">
         <div className="top-nav">
-          <button id="btn-toggle-mw-info">ℹ Info</button>
+          <Button variant="outline" id="btn-toggle-mw-info">ℹ Info</Button>
         </div>
         <div className="info-panel panel-hidden" id="mw-info-card" style={{ position:'absolute', top:'68px', left:'20px' }}>
           <h1 className="mw-title">Milky Way</h1>
@@ -2931,13 +2856,13 @@ const Index = () => {
       {/* SOLAR SYSTEM UI */}
       <div id="ui-solar-system" className="ui-layer hidden-ui">
         <div className="top-nav">
-          <button id="btn-back-galaxy" className="btn-danger">🌌 Galaxy</button>
-          <button id="btn-back-system" className="btn-danger" style={{ display:'none' }}>☀ Free View</button>
-          <button id="btn-flight-mode" className="btn-success">🚀 Pilot Ship</button>
-          <button id="btn-toggle-orbits">◯ Orbits</button>
-          <button id="btn-orrery">⊙ Orrery</button>
-          <button id="btn-gravity">⚛ Gravity</button>
-          <button id="btn-toggle-ss-info">ℹ Info</button>
+          <Button variant="outline" id="btn-back-galaxy" className="btn-danger">🌌 Galaxy</Button>
+          <Button variant="outline" id="btn-back-system" className="btn-danger" style={{ display:'none' }}>☀ Free View</Button>
+          <Button variant="outline" id="btn-flight-mode" className="btn-success">🚀 Pilot Ship</Button>
+          <Button variant="outline" id="btn-toggle-orbits">◯ Orbits</Button>
+          <Button variant="outline" id="btn-orrery">⊙ Orrery</Button>
+          <Button variant="outline" id="btn-gravity">⚛ Gravity</Button>
+          <Button variant="outline" id="btn-toggle-ss-info">ℹ Info</Button>
         </div>
 
         <div className="info-panel panel-hidden" id="ss-info-card" style={{ position:'absolute', top:'68px', left:'20px' }}>
@@ -2968,25 +2893,25 @@ const Index = () => {
 
         <div id="planet-navigator">
           <span className="nav-label">🚀 Travel:</span>
-          <button id="nav-The Sun"><span className="planet-dot" style={{ background:'#ffdd44' }} />Sun</button>
-          <button id="nav-Mercury"><span className="planet-dot" style={{ background:'#aaaaaa' }} />Mercury</button>
-          <button id="nav-Venus"><span className="planet-dot" style={{ background:'#ddaa66' }} />Venus</button>
-          <button id="nav-Earth"><span className="planet-dot" style={{ background:'#4488ff' }} />Earth</button>
-          <button id="nav-The Moon"><span className="planet-dot" style={{ background:'#e0e0e0' }} />Moon</button>
-          <button id="nav-Mars"><span className="planet-dot" style={{ background:'#cc4422' }} />Mars</button>
-          <button id="nav-Jupiter"><span className="planet-dot" style={{ background:'#cc9955' }} />Jupiter</button>
-          <button id="nav-Saturn"><span className="planet-dot" style={{ background:'#ddbb77' }} />Saturn</button>
-          <button id="nav-Uranus"><span className="planet-dot" style={{ background:'#77ccdd' }} />Uranus</button>
-          <button id="nav-Neptune"><span className="planet-dot" style={{ background:'#3355cc' }} />Neptune</button>
-          <button id="nav-Pluto"><span className="planet-dot" style={{ background:'#cc8888' }} />Pluto</button>
+          <Button variant="outline" id="nav-The Sun"><span className="planet-dot" style={{ background:'#ffdd44' }} />Sun</Button>
+          <Button variant="outline" id="nav-Mercury"><span className="planet-dot" style={{ background:'#aaaaaa' }} />Mercury</Button>
+          <Button variant="outline" id="nav-Venus"><span className="planet-dot" style={{ background:'#ddaa66' }} />Venus</Button>
+          <Button variant="outline" id="nav-Earth"><span className="planet-dot" style={{ background:'#4488ff' }} />Earth</Button>
+          <Button variant="outline" id="nav-The Moon"><span className="planet-dot" style={{ background:'#e0e0e0' }} />Moon</Button>
+          <Button variant="outline" id="nav-Mars"><span className="planet-dot" style={{ background:'#cc4422' }} />Mars</Button>
+          <Button variant="outline" id="nav-Jupiter"><span className="planet-dot" style={{ background:'#cc9955' }} />Jupiter</Button>
+          <Button variant="outline" id="nav-Saturn"><span className="planet-dot" style={{ background:'#ddbb77' }} />Saturn</Button>
+          <Button variant="outline" id="nav-Uranus"><span className="planet-dot" style={{ background:'#77ccdd' }} />Uranus</Button>
+          <Button variant="outline" id="nav-Neptune"><span className="planet-dot" style={{ background:'#3355cc' }} />Neptune</Button>
+          <Button variant="outline" id="nav-Pluto"><span className="planet-dot" style={{ background:'#cc8888' }} />Pluto</Button>
         </div>
 
         <div id="time-controls">
           <span className="time-label">⏱ Time:</span>
-          <button id="btn-pause">⏸ Pause</button>
-          <button id="btn-1x" className="btn-active">▶ 1×</button>
-          <button id="btn-50x">⏩ 50×</button>
-          <button id="btn-200x">⏭ 200×</button>
+          <Button variant="outline" id="btn-pause">⏸ Pause</Button>
+          <Button variant="outline" id="btn-1x" className="btn-active">▶ 1×</Button>
+          <Button variant="outline" id="btn-50x">⏩ 50×</Button>
+          <Button variant="outline" id="btn-200x">⏭ 200×</Button>
         </div>
 
         {/* COMBAT HUD: HEALTH BAR & ENEMY STATS */}
