@@ -568,13 +568,13 @@ const Index = () => {
     let isExploded = false;
     let explosionTimer = 0;
     let cameraShakeIntensity = 0;
-    const EXPLOSION_RESPAWN_DELAY = 2.0;
+    const EXPLOSION_RESPAWN_DELAY = 1.8;
 
-    // 1. Dynamic Omnidirectional Flash Light
-    const explosionLight = new THREE.PointLight(0xff7711, 0, 200, 0.8);
+    // 1. Dynamic Flash Light
+    const explosionLight = new THREE.PointLight(0xff9933, 0, 10.0, 1.2);
     sceneSS.add(explosionLight);
 
-    // 2. Volumetric 3D Fireball Core (Deforming Organic Plumes Mesh)
+    // 2. Volumetric 3D Fireball Core (The Original Deforming Organic Plumes Mesh)
     const fireballGeo = new THREE.IcosahedronGeometry(0.8, 4);
     // Custom displacement shader for billowing fiery clouds with hot white/yellow core, deep orange edges and smoke dissipation
     const fireballMat = new THREE.ShaderMaterial({
@@ -644,7 +644,7 @@ const Index = () => {
         void main() {
           vNormal = normalize(normalMatrix * normal);
           vPosition = position;
-          // Deform mesh outward into turbulent stylized plumes
+          // Deform mesh outward into turbulent stylized plumes (Original organic 3D model)
           float n = snoise(position * 3.5 + vec3(0.0, 0.0, uTime * 2.0));
           float n2 = snoise(position * 7.0 - vec3(uTime * 1.5));
           vNoise = n * 0.7 + n2 * 0.3;
@@ -684,7 +684,7 @@ const Index = () => {
     fireballMesh.visible = false;
     sceneSS.add(fireballMesh);
 
-    // 3. Dense Fiery & Plasma Particle Burst System (500 High-Speed Micro Embers)
+    // 3. Dense Fiery & Plasma Particle Burst System (450 High-Speed Embers)
     const EXP_PARTICLE_COUNT = 450;
     const expParticles: {
       pos: THREE.Vector3;
@@ -719,7 +719,7 @@ const Index = () => {
     })();
 
     const expMat = new THREE.PointsMaterial({
-      size: 0.7, vertexColors: true, map: fireTex,
+      size: 0.085, vertexColors: true, map: fireTex,
       transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
       sizeAttenuation: true
     });
@@ -743,7 +743,7 @@ const Index = () => {
     const shardMat = new THREE.MeshStandardMaterial({
       color: 0x18181f,
       emissive: 0xff3300,
-      emissiveIntensity: 2.0,
+      emissiveIntensity: 2.5,
       roughness: 0.3,
       metalness: 0.95
     });
@@ -751,7 +751,8 @@ const Index = () => {
     for (let i = 0; i < DEBRIS_COUNT; i++) {
       const shardMesh = new THREE.Mesh(shardGeo, shardMat.clone());
       const s = 0.5 + Math.random() * 1.4;
-      shardMesh.scale.set(s, s * (0.4 + Math.random() * 1.2), s);
+      // Proportional scale on original shard geometry
+      shardMesh.scale.set(s * 0.045, s * (0.4 + Math.random() * 1.2) * 0.045, s * 0.045);
       debrisGroup.add(shardMesh);
       debrisPieces.push({
         mesh: shardMesh,
@@ -807,8 +808,11 @@ const Index = () => {
     shockwaveSphere.visible = false;
     sceneSS.add(shockwaveSphere);
 
-    let shockwaveScale = 0;
-    let shockwaveOpacity = 0;
+    let activeExplosionTween: any = null;
+    let activeShockwaveTween: any = null;
+    let activeSphereTween: any = null;
+    let activeLightTween: any = null;
+    let activeShakeTween: any = null;
 
     function triggerExplosion(impactPoint: THREE.Vector3, impactObjName = 'Space Object', isPlayer = true) {
       explosionTimer = EXPLOSION_RESPAWN_DELAY;
@@ -816,7 +820,6 @@ const Index = () => {
       if (isPlayer) {
         if (isExploded) return;
         isExploded = true;
-        cameraShakeIntensity = 1.35;
         playerHealth = 0;
         updateHealthHUD();
 
@@ -836,41 +839,98 @@ const Index = () => {
         initAudio();
         audio.playExplosion();
         audio.playKillScore();
-        cameraShakeIntensity = Math.max(cameraShakeIntensity, 0.6);
         enemiesKilled++;
         showToast(`🎯 TARGET DESTROYED: ${impactObjName.toUpperCase()} (+100 PTS)`);
         updateCombatStatsHUD();
       }
 
-      // 1. Dynamic Flash Light
-      explosionLight.position.copy(impactPoint);
-      explosionLight.intensity = isPlayer ? 45.0 : 25.0;
+      // Camera Shake via Tween.js
+      if (activeShakeTween) activeShakeTween.stop();
+      const shakeObj = { intensity: isPlayer ? 0.75 : 0.35 };
+      activeShakeTween = new TWEEN.Tween(shakeObj)
+        .to({ intensity: 0 }, isPlayer ? 950 : 450)
+        .easing(TWEEN.Easing.Cubic.Out)
+        .onUpdate(() => {
+          cameraShakeIntensity = shakeObj.intensity;
+        })
+        .start();
 
-      // 2. 3D Volumetric Fireball Mesh (Billowing Stylized Plumes)
+      // 1. Dynamic Flash Light (calibrated realistic glow via Tween.js)
+      explosionLight.position.copy(impactPoint);
+      if (activeLightTween) activeLightTween.stop();
+      const lightObj = { intensity: isPlayer ? 7.5 : 4.5 };
+      activeLightTween = new TWEEN.Tween(lightObj)
+        .to({ intensity: 0 }, 420)
+        .easing(TWEEN.Easing.Exponential.Out)
+        .onUpdate(() => {
+          explosionLight.intensity = lightObj.intensity;
+        })
+        .start();
+
+      // 2. 3D Volumetric Fireball Mesh (Proportional realistic expansion via Tween.js)
       fireballMesh.position.copy(impactPoint);
-      fireballMesh.scale.set(isPlayer ? 2.8 : 1.8, isPlayer ? 2.8 : 1.8, isPlayer ? 2.8 : 1.8);
       fireballMat.uniforms.uProgress.value = 0.0;
       fireballMat.uniforms.uTime.value = 0.0;
       fireballMesh.visible = true;
 
-      // 3. Shockwave Ring & Expansion Sphere
+      if (activeExplosionTween) activeExplosionTween.stop();
+      const fbObj = { progress: 0.0, scale: isPlayer ? 0.012 : 0.008 };
+      const targetScale = isPlayer ? 0.052 : 0.038;
+      activeExplosionTween = new TWEEN.Tween(fbObj)
+        .to({ progress: 1.0, scale: targetScale }, 1500)
+        .easing(TWEEN.Easing.Cubic.Out)
+        .onUpdate(() => {
+          fireballMat.uniforms.uProgress.value = fbObj.progress;
+          fireballMesh.scale.setScalar(fbObj.scale);
+        })
+        .onComplete(() => {
+          fireballMesh.visible = false;
+          if (isPlayer) {
+            respawnShip();
+          }
+        })
+        .start();
+
+      // 3. Shockwave Ring & Corona Sphere via Tween.js (Scaled to fit vessel)
       shockwaveMesh.position.copy(impactPoint);
       shockwaveMesh.quaternion.copy(isPlayer ? playerShip.quaternion : new THREE.Quaternion().random());
-      shockwaveScale = isPlayer ? 0.6 : 0.35;
-      shockwaveOpacity = 1.0;
       shockwaveMesh.visible = true;
+      if (activeShockwaveTween) activeShockwaveTween.stop();
+      const ringObj = { scale: 0.04, opacity: 1.0 };
+      activeShockwaveTween = new TWEEN.Tween(ringObj)
+        .to({ scale: isPlayer ? 0.45 : 0.32, opacity: 0 }, 520)
+        .easing(TWEEN.Easing.Cubic.Out)
+        .onUpdate(() => {
+          shockwaveMesh.scale.setScalar(ringObj.scale);
+          shockwaveMat.opacity = ringObj.opacity;
+        })
+        .onComplete(() => {
+          shockwaveMesh.visible = false;
+        })
+        .start();
 
       shockwaveSphere.position.copy(impactPoint);
-      shockwaveSphere.scale.set(0.6, 0.6, 0.6);
-      shockwaveSphereMat.uniforms.opacityVal.value = 1.0;
       shockwaveSphere.visible = true;
+      if (activeSphereTween) activeSphereTween.stop();
+      const sphereObj = { scale: 0.05, opacity: 0.95 };
+      activeSphereTween = new TWEEN.Tween(sphereObj)
+        .to({ scale: isPlayer ? 0.40 : 0.28, opacity: 0 }, 450)
+        .easing(TWEEN.Easing.Quadratic.Out)
+        .onUpdate(() => {
+          shockwaveSphere.scale.setScalar(sphereObj.scale);
+          shockwaveSphereMat.uniforms.opacityVal.value = sphereObj.opacity;
+        })
+        .onComplete(() => {
+          shockwaveSphere.visible = false;
+        })
+        .start();
 
-      // 4. Dense High-Velocity Ember Particles Burst
+      // 4. Dense High-Velocity Ember Particles Burst (Realistic micro-sparks)
       expParticles.length = 0;
       for (let i = 0; i < EXP_PARTICLE_COUNT; i++) {
         const theta = Math.random() * Math.PI * 2;
         const phi = Math.acos((Math.random() * 2) - 1);
-        const speed = (isPlayer ? 0.12 : 0.08) + Math.random() * 0.55;
+        const speed = (isPlayer ? 0.05 : 0.035) + Math.random() * 0.12;
         const vel = new THREE.Vector3(
           Math.sin(phi) * Math.cos(theta),
           Math.sin(phi) * Math.sin(theta),
@@ -888,23 +948,23 @@ const Index = () => {
         const color = colors[Math.floor(Math.random() * colors.length)];
 
         expParticles.push({
-          pos: impactPoint.clone().add(new THREE.Vector3((Math.random()-0.5)*0.25, (Math.random()-0.5)*0.25, (Math.random()-0.5)*0.25)),
+          pos: impactPoint.clone().add(new THREE.Vector3((Math.random()-0.5)*0.03, (Math.random()-0.5)*0.03, (Math.random()-0.5)*0.03)),
           vel,
           life: 1.0,
-          maxLife: 1.0 + Math.random() * 0.9,
-          size: 1.2 + Math.random() * 3.0,
+          maxLife: 0.9 + Math.random() * 0.8,
+          size: 0.4 + Math.random() * 1.0,
           color,
           rotSpeed: (Math.random() - 0.5) * 6
         });
       }
       expPoints.visible = true;
 
-      // 5. Shrapnel Debris Shards (55 Spinning Hull Parts)
+      // 5. Shrapnel Debris Shards (45 realistic Hull Panels)
       debrisGroup.visible = true;
       debrisPieces.forEach(dp => {
         dp.mesh.position.copy(impactPoint);
         dp.mesh.visible = true;
-        const speed = (isPlayer ? 0.14 : 0.10) + Math.random() * 0.40;
+        const speed = (isPlayer ? 0.045 : 0.03) + Math.random() * 0.09;
         dp.vel.set(
           (Math.random() - 0.5) * 2,
           (Math.random() - 0.5) * 2,
@@ -918,6 +978,21 @@ const Index = () => {
         dp.life = 1.0;
         (dp.mesh.material as THREE.MeshStandardMaterial).emissiveIntensity = 2.5;
       });
+
+      // Shrapnel emissive cooling via Tween.js
+      const debrisCool = { emissive: 2.5 };
+      new TWEEN.Tween(debrisCool)
+        .to({ emissive: 0 }, 1400)
+        .easing(TWEEN.Easing.Exponential.Out)
+        .onUpdate(() => {
+          debrisPieces.forEach(dp => {
+            (dp.mesh.material as THREE.MeshStandardMaterial).emissiveIntensity = debrisCool.emissive;
+          });
+        })
+        .onComplete(() => {
+          debrisGroup.visible = false;
+        })
+        .start();
     }
 
     function updateExplosion(dt: number) {
@@ -933,36 +1008,12 @@ const Index = () => {
 
       if (explosionTimer > 0) {
         explosionTimer -= dt;
-        const elapsed = EXPLOSION_RESPAWN_DELAY - explosionTimer;
-        const normProgress = Math.min(1.0, elapsed / 1.95);
 
-        // Flash Light Decay
-        explosionLight.intensity = Math.max(0, explosionLight.intensity - dt * 12.0);
-
-        // 1. Update Volumetric 3D Fireball Mesh
+        // Rotate Volumetric Fireball Mesh in space
         if (fireballMesh.visible) {
           fireballMat.uniforms.uTime.value += dt;
-          fireballMat.uniforms.uProgress.value = normProgress;
           fireballMesh.rotation.y += dt * 1.5;
           fireballMesh.rotation.z += dt * 1.0;
-          if (normProgress >= 0.98) fireballMesh.visible = false;
-        }
-
-        // 2. Expand Shockwave Ring & Corona Sphere
-        if (shockwaveMesh.visible) {
-          shockwaveScale += dt * 24.0;
-          shockwaveOpacity = Math.max(0, shockwaveOpacity - dt * 1.6);
-          shockwaveMesh.scale.set(shockwaveScale, shockwaveScale, shockwaveScale);
-          shockwaveMat.opacity = shockwaveOpacity;
-          if (shockwaveOpacity <= 0) shockwaveMesh.visible = false;
-        }
-
-        if (shockwaveSphere.visible) {
-          const sphScale = shockwaveSphere.scale.x + dt * 20.0;
-          shockwaveSphere.scale.set(sphScale, sphScale, sphScale);
-          const sphOp = Math.max(0, shockwaveSphereMat.uniforms.opacityVal.value - dt * 1.5);
-          shockwaveSphereMat.uniforms.opacityVal.value = sphOp;
-          if (sphOp <= 0) shockwaveSphere.visible = false;
         }
 
         // 3. Update Ember & Fire Particles
@@ -971,15 +1022,15 @@ const Index = () => {
           const p = expParticles[i];
           if (p.life > 0) {
             p.life -= dt / p.maxLife;
-            p.pos.addScaledVector(p.vel, dt * 20.0);
-            p.vel.multiplyScalar(Math.pow(0.90, dt * 60)); // air/space drag in expanding cloud
+            p.pos.addScaledVector(p.vel, dt * 7.0);
+            p.vel.multiplyScalar(Math.pow(0.85, dt * 60)); // aerodynamic drag in expanding gas plume
             const t = Math.max(0, p.life);
 
             expPos[i * 3] = p.pos.x;
             expPos[i * 3 + 1] = p.pos.y;
             expPos[i * 3 + 2] = p.pos.z;
 
-            expSizes[i] = p.size * t * (1.0 + (1.0 - t) * 2.2);
+            expSizes[i] = p.size * t * (1.0 + (1.0 - t) * 1.8);
 
             // Transition: Pure Incandescent White -> Radiant Yellow -> Red-Orange -> Dark Charcoal Ash
             expCol[i * 3] = p.color.r * (t > 0.25 ? 1.0 : t * 4.0);
@@ -995,21 +1046,19 @@ const Index = () => {
         expGeo.attributes.size.needsUpdate = true;
         if (activeParticles === 0) expPoints.visible = false;
 
-        // 4. Update Hull Shards Debris (lasts 2 seconds)
+        // 4. Update Hull Shards Debris
         debrisPieces.forEach(dp => {
           if (dp.life > 0) {
-            dp.life -= dt / 2.0;
-            dp.mesh.position.addScaledVector(dp.vel, dt * 26.0);
+            dp.life -= dt / 1.8;
+            dp.mesh.position.addScaledVector(dp.vel, dt * 7.5);
             dp.mesh.rotation.x += dp.rotVel.x * dt;
             dp.mesh.rotation.y += dp.rotVel.y * dt;
             dp.mesh.rotation.z += dp.rotVel.z * dt;
-            const mat = dp.mesh.material as THREE.MeshStandardMaterial;
-            mat.emissiveIntensity = Math.max(0, dp.life * 2.5);
             if (dp.life <= 0) dp.mesh.visible = false;
           }
         });
 
-        // Hide all elements and respawn when 2.0s timer finishes
+        // Hide all elements when timer expires
         if (explosionTimer <= 0) {
           fireballMesh.visible = false;
           shockwaveMesh.visible = false;
@@ -1017,16 +1066,12 @@ const Index = () => {
           expPoints.visible = false;
           debrisGroup.visible = false;
           explosionLight.intensity = 0;
-          if (isExploded) {
-            respawnShip();
-          }
         }
       }
 
       // Dynamic Camera Shake Decay
       if (cameraShakeIntensity > 0) {
-        cameraShakeIntensity = Math.max(0, cameraShakeIntensity - dt * 1.4);
-        const shake = cameraShakeIntensity * 0.32;
+        const shake = cameraShakeIntensity * 0.18;
         camera.position.x += (Math.random() - 0.5) * shake;
         camera.position.y += (Math.random() - 0.5) * shake;
         camera.position.z += (Math.random() - 0.5) * shake;
