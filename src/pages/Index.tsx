@@ -7,6 +7,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import * as TWEEN from '@tweenjs/tween.js';
 import { SpaceAudioEngine } from '../lib/spaceAudio';
+import { dampingFactor, explosionScale, FLIGHT_TUNING, gearForThrust } from '../lib/flightTuning';
 import '../styles/universe.css';
 
 const Index = () => {
@@ -27,6 +28,10 @@ const Index = () => {
     const TARGET_SHIP_SIZE = 0.045;
     const GLOBAL_SPEED_SCALE = 0.01;
     const G_CONSTANT = 0.0000008;
+    const animationGroup = new TWEEN.Group();
+    let animationTime = 0;
+    const visualTokens = getComputedStyle(document.documentElement);
+    const sceneColor = (name: string) => visualTokens.getPropertyValue(name).trim();
 
     let activeScene = 'milkyWay';
     let flightModeActive = false;
@@ -42,6 +47,9 @@ const Index = () => {
 
     // ── RENDERER ──
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, logarithmicDepthBuffer: true });
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.15;
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -102,21 +110,21 @@ const Index = () => {
     //  SOLAR SYSTEM
     // ════════════════════════════════════════════════════════════
     const sceneSS = new THREE.Scene();
-    sceneSS.add(new THREE.AmbientLight(0x44445a, 2.2));
+    sceneSS.add(new THREE.AmbientLight(sceneColor('--scene-fill'), 1.6));
 
-    const sunLight = new THREE.PointLight(0xfff5e4, 5.5, 1200, 0.4);
+    const sunLight = new THREE.PointLight(sceneColor('--scene-sunlight'), 5.5, 1200, 0.4);
     sunLight.castShadow = false;
     sceneSS.add(sunLight);
 
     // Subtle global hemisphere fill to give soft detail on shaded sides of planets
-    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x111122, 1.2);
+    const hemiLight = new THREE.HemisphereLight(sceneColor('--scene-sky'), sceneColor('--scene-shadow'), 0.9);
     sceneSS.add(hemiLight);
 
     // Bloom composer
     const composer = new EffectComposer(renderer);
     composer.addPass(new RenderPass(sceneSS, camera));
     const bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(window.innerWidth, window.innerHeight), 1.2, 0.45, 0.75
+      new THREE.Vector2(window.innerWidth, window.innerHeight), 0.65, 0.3, 0.9
     );
     composer.addPass(bloomPass);
 
@@ -424,6 +432,9 @@ const Index = () => {
     const keys = { up:false, down:false, left:false, right:false, space:false, q:false, e:false, brake:false, fire:false };
     let engineGlow: THREE.PointLight | null = null;
     let currentThrust = 0.0002;
+    let throttleEnvelope = 0;
+    let visualBank = 0;
+    let trailEmission = 0;
     const gravityAccumulator = new THREE.Vector3();
 
     // ── PLAYER HEALTH & COMBAT STATS ──
@@ -439,15 +450,15 @@ const Index = () => {
     // 1. Weapon Recoil Kickback
     const recoilState = { z: 0, pitch: 0 };
     function fireWeaponRecoil() {
-      new TWEEN.Tween(recoilState)
+      new TWEEN.Tween(recoilState, animationGroup)
         .to({ z: 0.007, pitch: -0.012 }, 35)
         .easing(TWEEN.Easing.Quadratic.Out)
         .chain(
-          new TWEEN.Tween(recoilState)
+          new TWEEN.Tween(recoilState, animationGroup)
             .to({ z: 0, pitch: 0 }, 90)
             .easing(TWEEN.Easing.Back.Out)
         )
-        .start();
+        .start(animationTime);
     }
 
     // 2. Aerodynamic Barrel Roll (Evasive Manoeuvre)
@@ -462,14 +473,14 @@ const Index = () => {
       showScorePopup('🛡 EVASÃO: BARREL ROLL!', '#00e5ff');
 
       barrelRollState.z = 0;
-      new TWEEN.Tween(barrelRollState)
+      new TWEEN.Tween(barrelRollState, animationGroup)
         .to({ z: direction * Math.PI * 2 }, 550)
         .easing(TWEEN.Easing.Cubic.Out)
         .onComplete(() => {
           barrelRollState.z = 0;
           isBarrelRolling = false;
         })
-        .start();
+        .start(animationTime);
     }
 
     // 3. Sniper Aim / Target Focus Zoom
@@ -477,17 +488,17 @@ const Index = () => {
     const fovState = { fov: 60 };
     let aimZoomTween: any = null;
     function setAimZoom(active: boolean) {
-      if (isAimZoomed === active || !flightModeActive || isExploded) return;
+      if (isAimZoomed === active || (active && (!flightModeActive || isExploded))) return;
       isAimZoomed = active;
       if (aimZoomTween) aimZoomTween.stop();
-      aimZoomTween = new TWEEN.Tween(fovState)
+      aimZoomTween = new TWEEN.Tween(fovState, animationGroup)
         .to({ fov: active ? 36 : 60 }, 280)
         .easing(TWEEN.Easing.Cubic.Out)
         .onUpdate(() => {
           camera.fov = fovState.fov;
           camera.updateProjectionMatrix();
         })
-        .start();
+        .start(animationTime);
 
       const crosshair = document.getElementById('flight-crosshair');
       if (crosshair) {
@@ -516,18 +527,18 @@ const Index = () => {
       shieldMesh.scale.set(0.65, 0.65, 0.65);
       shieldMat.opacity = 0.95;
 
-      new TWEEN.Tween(shieldMesh.scale)
+      new TWEEN.Tween(shieldMesh.scale, animationGroup)
         .to({ x: 1.3, y: 1.3, z: 1.3 }, 320)
         .easing(TWEEN.Easing.Back.Out)
-        .start();
+        .start(animationTime);
 
-      new TWEEN.Tween(shieldMat)
+      new TWEEN.Tween(shieldMat, animationGroup)
         .to({ opacity: 0 }, 380)
         .easing(TWEEN.Easing.Quadratic.Out)
         .onComplete(() => {
           shieldMesh.visible = false;
         })
-        .start();
+        .start(animationTime);
     }
 
     // 5. Cinematic Floating Score Popup
@@ -815,7 +826,11 @@ const Index = () => {
     let activeShakeTween: any = null;
 
     function triggerExplosion(impactPoint: THREE.Vector3, impactObjName = 'Space Object', isPlayer = true) {
+      if (isPlayer && isExploded) return;
+      const blast = explosionScale(TARGET_SHIP_SIZE * (isPlayer ? 1.5 : 1.6));
       explosionTimer = EXPLOSION_RESPAWN_DELAY;
+      explosionLight.distance = blast.lightRange;
+      expMat.size = blast.sparkSize;
 
       if (isPlayer) {
         if (isExploded) return;
@@ -847,25 +862,25 @@ const Index = () => {
       // Camera Shake via Tween.js
       if (activeShakeTween) activeShakeTween.stop();
       const shakeObj = { intensity: isPlayer ? 0.75 : 0.35 };
-      activeShakeTween = new TWEEN.Tween(shakeObj)
+      activeShakeTween = new TWEEN.Tween(shakeObj, animationGroup)
         .to({ intensity: 0 }, isPlayer ? 950 : 450)
         .easing(TWEEN.Easing.Cubic.Out)
         .onUpdate(() => {
           cameraShakeIntensity = shakeObj.intensity;
         })
-        .start();
+        .start(animationTime);
 
       // 1. Dynamic Flash Light (calibrated realistic glow via Tween.js)
       explosionLight.position.copy(impactPoint);
       if (activeLightTween) activeLightTween.stop();
       const lightObj = { intensity: isPlayer ? 7.5 : 4.5 };
-      activeLightTween = new TWEEN.Tween(lightObj)
+      activeLightTween = new TWEEN.Tween(lightObj, animationGroup)
         .to({ intensity: 0 }, 420)
         .easing(TWEEN.Easing.Exponential.Out)
         .onUpdate(() => {
           explosionLight.intensity = lightObj.intensity;
         })
-        .start();
+        .start(animationTime);
 
       // 2. 3D Volumetric Fireball Mesh (Proportional realistic expansion via Tween.js)
       fireballMesh.position.copy(impactPoint);
@@ -874,9 +889,10 @@ const Index = () => {
       fireballMesh.visible = true;
 
       if (activeExplosionTween) activeExplosionTween.stop();
-      const fbObj = { progress: 0.0, scale: isPlayer ? 0.012 : 0.008 };
-      const targetScale = isPlayer ? 0.052 : 0.038;
-      activeExplosionTween = new TWEEN.Tween(fbObj)
+      const fbObj = { progress: 0.0, scale: blast.coreStart };
+      fireballMesh.scale.setScalar(blast.coreStart);
+      const targetScale = blast.coreEnd;
+      activeExplosionTween = new TWEEN.Tween(fbObj, animationGroup)
         .to({ progress: 1.0, scale: targetScale }, 1500)
         .easing(TWEEN.Easing.Cubic.Out)
         .onUpdate(() => {
@@ -889,16 +905,18 @@ const Index = () => {
             respawnShip();
           }
         })
-        .start();
+        .start(animationTime);
 
       // 3. Shockwave Ring & Corona Sphere via Tween.js (Scaled to fit vessel)
       shockwaveMesh.position.copy(impactPoint);
       shockwaveMesh.quaternion.copy(isPlayer ? playerShip.quaternion : new THREE.Quaternion().random());
       shockwaveMesh.visible = true;
       if (activeShockwaveTween) activeShockwaveTween.stop();
-      const ringObj = { scale: 0.04, opacity: 1.0 };
-      activeShockwaveTween = new TWEEN.Tween(ringObj)
-        .to({ scale: isPlayer ? 0.45 : 0.32, opacity: 0 }, 520)
+      const ringObj = { scale: blast.ringStart, opacity: 0.75 };
+      shockwaveMesh.scale.setScalar(blast.ringStart);
+      shockwaveMat.opacity = ringObj.opacity;
+      activeShockwaveTween = new TWEEN.Tween(ringObj, animationGroup)
+        .to({ scale: blast.ringEnd, opacity: 0 }, 520)
         .easing(TWEEN.Easing.Cubic.Out)
         .onUpdate(() => {
           shockwaveMesh.scale.setScalar(ringObj.scale);
@@ -907,14 +925,15 @@ const Index = () => {
         .onComplete(() => {
           shockwaveMesh.visible = false;
         })
-        .start();
+        .start(animationTime);
 
       shockwaveSphere.position.copy(impactPoint);
       shockwaveSphere.visible = true;
       if (activeSphereTween) activeSphereTween.stop();
-      const sphereObj = { scale: 0.05, opacity: 0.95 };
-      activeSphereTween = new TWEEN.Tween(sphereObj)
-        .to({ scale: isPlayer ? 0.40 : 0.28, opacity: 0 }, 450)
+      const sphereObj = { scale: blast.sphereStart, opacity: 0.65 };
+      shockwaveSphere.scale.setScalar(blast.sphereStart);
+      activeSphereTween = new TWEEN.Tween(sphereObj, animationGroup)
+        .to({ scale: blast.sphereEnd, opacity: 0 }, 450)
         .easing(TWEEN.Easing.Quadratic.Out)
         .onUpdate(() => {
           shockwaveSphere.scale.setScalar(sphereObj.scale);
@@ -923,14 +942,14 @@ const Index = () => {
         .onComplete(() => {
           shockwaveSphere.visible = false;
         })
-        .start();
+        .start(animationTime);
 
       // 4. Dense High-Velocity Ember Particles Burst (Realistic micro-sparks)
       expParticles.length = 0;
       for (let i = 0; i < EXP_PARTICLE_COUNT; i++) {
         const theta = Math.random() * Math.PI * 2;
         const phi = Math.acos((Math.random() * 2) - 1);
-        const speed = (isPlayer ? 0.05 : 0.035) + Math.random() * 0.12;
+        const speed = blast.sparkSpeed * (0.3 + Math.random() * 0.7);
         const vel = new THREE.Vector3(
           Math.sin(phi) * Math.cos(theta),
           Math.sin(phi) * Math.sin(theta),
@@ -964,7 +983,8 @@ const Index = () => {
       debrisPieces.forEach(dp => {
         dp.mesh.position.copy(impactPoint);
         dp.mesh.visible = true;
-        const speed = (isPlayer ? 0.045 : 0.03) + Math.random() * 0.09;
+        const speed = blast.sparkSpeed * (0.2 + Math.random() * 0.5);
+        dp.mesh.scale.setScalar(blast.debrisScale * (0.5 + Math.random()));
         dp.vel.set(
           (Math.random() - 0.5) * 2,
           (Math.random() - 0.5) * 2,
@@ -981,7 +1001,7 @@ const Index = () => {
 
       // Shrapnel emissive cooling via Tween.js
       const debrisCool = { emissive: 2.5 };
-      new TWEEN.Tween(debrisCool)
+      new TWEEN.Tween(debrisCool, animationGroup)
         .to({ emissive: 0 }, 1400)
         .easing(TWEEN.Easing.Exponential.Out)
         .onUpdate(() => {
@@ -992,7 +1012,7 @@ const Index = () => {
         .onComplete(() => {
           debrisGroup.visible = false;
         })
-        .start();
+        .start(animationTime);
     }
 
     function updateExplosion(dt: number) {
@@ -1022,7 +1042,7 @@ const Index = () => {
           const p = expParticles[i];
           if (p.life > 0) {
             p.life -= dt / p.maxLife;
-            p.pos.addScaledVector(p.vel, dt * 7.0);
+            p.pos.addScaledVector(p.vel, dt);
             p.vel.multiplyScalar(Math.pow(0.85, dt * 60)); // aerodynamic drag in expanding gas plume
             const t = Math.max(0, p.life);
 
@@ -1050,7 +1070,7 @@ const Index = () => {
         debrisPieces.forEach(dp => {
           if (dp.life > 0) {
             dp.life -= dt / 1.8;
-            dp.mesh.position.addScaledVector(dp.vel, dt * 7.5);
+            dp.mesh.position.addScaledVector(dp.vel, dt);
             dp.mesh.rotation.x += dp.rotVel.x * dt;
             dp.mesh.rotation.y += dp.rotVel.y * dt;
             dp.mesh.rotation.z += dp.rotVel.z * dt;
@@ -1148,7 +1168,7 @@ const Index = () => {
     })();
 
     const trailMat = new THREE.PointsMaterial({
-      size: 0.08, vertexColors: true, map: trailTex,
+      size: TARGET_SHIP_SIZE * 0.16, vertexColors: true, map: trailTex,
       transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
       sizeAttenuation: true
     });
@@ -1453,7 +1473,7 @@ const Index = () => {
     function createTieDefenderShip(): THREE.Group {
       const enemyGroup = new THREE.Group();
       // Visual scale calibrated for space combat visibility
-      const scale = TARGET_SHIP_SIZE * 3.8;
+      const scale = TARGET_SHIP_SIZE * 0.7;
 
       if (customEnemyModelTemplate) {
         const clonedModel = customEnemyModelTemplate.clone(true);
@@ -1634,6 +1654,7 @@ const Index = () => {
     //  EVENTS
     // ════════════════════════════════════════════════════════════
     const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement)?.closest('input, textarea, select')) return;
       initAudio();
       if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
       if (e.code==='ArrowUp')    keys.up=true;
@@ -1650,11 +1671,11 @@ const Index = () => {
         keys.e=true;
         triggerBarrelRoll(1);
       }
-      if (e.code==='KeyZ' || e.code==='KeyC') {
+      if (e.code==='KeyZ') {
         setAimZoom(true);
       }
       if (e.code==='ShiftLeft'||e.code==='ShiftRight') keys.brake=true;
-      if (flightModeActive) {
+      if (flightModeActive && !e.repeat) {
         const thr: Record<string, [number, string]> = { Digit1:[0.0002,"SCENIC CRUISE"], Digit2:[0.001,"IMPULSE"], Digit3:[0.005,"COMBAT"], Digit4:[0.02,"HYPERDRIVE"] };
         if (thr[e.code]) { currentThrust = thr[e.code][0]; showToast("THRUST: "+thr[e.code][1]); audio.playGearShift(Object.keys(thr).indexOf(e.code)+1); }
       }
@@ -1669,7 +1690,7 @@ const Index = () => {
       if (e.code==='Space')  { keys.space=false; }
       if (e.code==='KeyQ')   keys.q=false;
       if (e.code==='KeyE')   keys.e=false;
-      if (e.code==='KeyZ' || e.code==='KeyC') {
+      if (e.code==='KeyZ') {
         setAimZoom(false);
       }
       if (e.code==='ShiftLeft'||e.code==='ShiftRight') keys.brake=false;
@@ -1694,6 +1715,14 @@ const Index = () => {
       }
     };
 
+    const releaseControls = () => {
+      for (const key of Object.keys(keys) as Array<keyof typeof keys>) keys[key] = false;
+      throttleEnvelope = 0;
+      audio.updateThrust(0);
+      setAimZoom(false);
+    };
+    const onVisibilityChange = () => { if (document.hidden) releaseControls(); };
+
     const onContextMenu = (e: MouseEvent) => {
       if (flightModeActive) e.preventDefault();
     };
@@ -1702,6 +1731,8 @@ const Index = () => {
       initAudio();
     };
 
+    window.addEventListener('blur', releaseControls);
+    document.addEventListener('visibilitychange', onVisibilityChange);
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('mousedown', onMouseDown);
@@ -1839,36 +1870,18 @@ const Index = () => {
         showToast(`🌌 HIPERSALTO INICIADO: RUMO A ${targetName.toUpperCase()}!`);
         showScorePopup(`🌌 WARP 9: ${targetName.toUpperCase()}`, '#ffaa00');
 
-        // Relativistic FOV stretch: 60 -> 105 -> 60 with elastic arrival
-        const fovObj = { fov: 60 };
-        new TWEEN.Tween(fovObj)
-          .to({ fov: 105 }, 480)
-          .easing(TWEEN.Easing.Quadratic.In)
-          .onUpdate(() => {
-            camera.fov = fovObj.fov;
-            camera.updateProjectionMatrix();
-          })
-          .chain(
-            new TWEEN.Tween(fovObj)
-              .to({ fov: 60 }, 750)
-              .easing(TWEEN.Easing.Back.Out)
-              .onUpdate(() => {
-                camera.fov = fovObj.fov;
-                camera.updateProjectionMatrix();
-              })
-              .onComplete(() => {
-                isTraveling = false;
-                showToast(`✅ ÓRBITA ALCANÇADA: ${targetName.toUpperCase()}`);
-              })
-          )
-          .start();
-
+        shipVelocity.set(0, 0, 0);
+        shipAngularVelocity.set(0, 0, 0);
         // Warp spaceship to planet orbit
         const destPos = new THREE.Vector3(wp.x + r * 3.5, wp.y + r * 0.8, wp.z + r * 3.5);
-        new TWEEN.Tween(playerShip.position)
+        new TWEEN.Tween(playerShip.position, animationGroup)
           .to({ x: destPos.x, y: destPos.y, z: destPos.z }, 1200)
           .easing(TWEEN.Easing.Cubic.InOut)
-          .start();
+          .onComplete(() => {
+            isTraveling = false;
+            showToast(`✅ ÓRBITA ALCANÇADA: ${targetName.toUpperCase()}`);
+          })
+          .start(animationTime);
 
         // Smoothly orient ship towards planet
         const lookTgt = wp.clone();
@@ -1877,13 +1890,13 @@ const Index = () => {
           new THREE.Matrix4().lookAt(destPos, lookTgt, new THREE.Vector3(0, 1, 0))
         );
         const qObj = { t: 0 };
-        new TWEEN.Tween(qObj)
+        new TWEEN.Tween(qObj, animationGroup)
           .to({ t: 1 }, 1200)
           .easing(TWEEN.Easing.Cubic.InOut)
           .onUpdate(() => {
             playerShip.quaternion.copy(curQuat).slerp(tgtQuat, qObj.t);
           })
-          .start();
+          .start(animationTime);
 
       } else {
         isTraveling = true;
@@ -1892,7 +1905,7 @@ const Index = () => {
         const destPos = new THREE.Vector3(wp.x + r * 3, wp.y + r * 1.5, wp.z + r * 3);
         const fovObj = { fov: camera.fov };
 
-        new TWEEN.Tween(fovObj)
+        new TWEEN.Tween(fovObj, animationGroup)
           .to({ fov: 85 }, 350)
           .easing(TWEEN.Easing.Quadratic.In)
           .onUpdate(() => {
@@ -1900,7 +1913,7 @@ const Index = () => {
             camera.updateProjectionMatrix();
           })
           .chain(
-            new TWEEN.Tween(fovObj)
+            new TWEEN.Tween(fovObj, animationGroup)
               .to({ fov: 60 }, 650)
               .easing(TWEEN.Easing.Cubic.Out)
               .onUpdate(() => {
@@ -1911,17 +1924,17 @@ const Index = () => {
                 isTraveling = false;
               })
           )
-          .start();
+          .start(animationTime);
 
-        new TWEEN.Tween(camera.position)
+        new TWEEN.Tween(camera.position, animationGroup)
           .to({ x: destPos.x, y: destPos.y, z: destPos.z }, 1000)
           .easing(TWEEN.Easing.Cubic.InOut)
-          .start();
+          .start(animationTime);
 
-        new TWEEN.Tween(controls.target)
+        new TWEEN.Tween(controls.target, animationGroup)
           .to({ x: wp.x, y: wp.y, z: wp.z }, 1000)
           .easing(TWEEN.Easing.Cubic.InOut)
-          .start();
+          .start(animationTime);
       }
     }
 
@@ -2119,7 +2132,7 @@ const Index = () => {
       });
       const box = new THREE.Box3().setFromObject(model);
       const sz = new THREE.Vector3(); box.getSize(sz);
-      const targetDim = TARGET_SHIP_SIZE * 4.2;
+      const targetDim = TARGET_SHIP_SIZE * 1.6;
       const scale = targetDim / Math.max(sz.x, sz.y, sz.z);
       model.scale.setScalar(scale);
       const sc = new THREE.Box3().setFromObject(model);
@@ -2370,7 +2383,10 @@ const Index = () => {
     const onResize = () => {
       camera.aspect = window.innerWidth/window.innerHeight;
       camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.15;
+    renderer.setSize(window.innerWidth, window.innerHeight);
       composer.setSize(window.innerWidth, window.innerHeight);
     };
     window.addEventListener('resize', onResize);
@@ -2398,43 +2414,44 @@ const Index = () => {
 
     const tick = () => {
       const dt = Math.min(clock.getDelta(), 0.05);
-      TWEEN.update();
+      animationTime += dt * 1000;
+      animationGroup.update(animationTime);
 
       if (activeScene === 'milkyWay') {
         controls.update();
-        mwGroup.rotation.y += 0.0002;
+        mwGroup.rotation.y += 0.012 * dt;
         const sp = anchor.position.clone().project(camera);
         const mk = document.getElementById('target-marker')!;
         mk.style.left = `${(sp.x*.5+.5)*window.innerWidth}px`;
         mk.style.top = `${(sp.y*-.5+.5)*window.innerHeight}px`;
         renderer.render(sceneMW, camera);
       } else {
-        sunMesh.rotation.y += 0.0003 * GLOBAL_SPEED_SCALE * timeMultiplier;
+        sunMesh.rotation.y += 0.0003 * GLOBAL_SPEED_SCALE * dt * FLIGHT_TUNING.referenceFps * timeMultiplier;
         if ((sunMesh as any).custom3DPivot) {
-          (sunMesh as any).custom3DPivot.rotation.y += 0.0003 * GLOBAL_SPEED_SCALE * timeMultiplier;
+          (sunMesh as any).custom3DPivot.rotation.y += 0.0003 * GLOBAL_SPEED_SCALE * dt * FLIGHT_TUNING.referenceFps * timeMultiplier;
         }
-        astBelt.rotation.y += 0.0002 * GLOBAL_SPEED_SCALE * timeMultiplier;
-        kuiperBelt.rotation.y += 0.00005 * GLOBAL_SPEED_SCALE * timeMultiplier;
+        astBelt.rotation.y += 0.0002 * GLOBAL_SPEED_SCALE * dt * FLIGHT_TUNING.referenceFps * timeMultiplier;
+        kuiperBelt.rotation.y += 0.00005 * GLOBAL_SPEED_SCALE * dt * FLIGHT_TUNING.referenceFps * timeMultiplier;
         starLayer1.rotation.y += 0.00003 * dt;
         starLayer2.rotation.y -= 0.00001 * dt;
 
         ssBodies.forEach((b: any) => {
           if (b.type === 'planet') {
-            b.angle += b.speed * GLOBAL_SPEED_SCALE * timeMultiplier;
+            b.angle += b.speed * GLOBAL_SPEED_SCALE * dt * FLIGHT_TUNING.referenceFps * timeMultiplier;
             b.system.position.set(
               b.a * Math.cos(b.angle) - (b.a * b.e),
               0,
               b.a * Math.sqrt(1 - b.e*b.e) * Math.sin(b.angle)
             );
-            b.mesh.rotation.y += 0.004 * GLOBAL_SPEED_SCALE * timeMultiplier;
+            b.mesh.rotation.y += 0.004 * GLOBAL_SPEED_SCALE * dt * FLIGHT_TUNING.referenceFps * timeMultiplier;
             if (b.custom3DPivot) {
-              b.custom3DPivot.rotation.y += 0.004 * GLOBAL_SPEED_SCALE * timeMultiplier;
+              b.custom3DPivot.rotation.y += 0.004 * GLOBAL_SPEED_SCALE * dt * FLIGHT_TUNING.referenceFps * timeMultiplier;
             }
           } else if (b.type === 'moon') {
-            b.pivot.rotation.y += b.speed * GLOBAL_SPEED_SCALE * timeMultiplier;
-            b.mesh.rotation.y += 0.008 * GLOBAL_SPEED_SCALE * timeMultiplier;
+            b.pivot.rotation.y += b.speed * GLOBAL_SPEED_SCALE * dt * FLIGHT_TUNING.referenceFps * timeMultiplier;
+            b.mesh.rotation.y += 0.008 * GLOBAL_SPEED_SCALE * dt * FLIGHT_TUNING.referenceFps * timeMultiplier;
             if (b.custom3DPivot) {
-              b.custom3DPivot.rotation.y += 0.008 * GLOBAL_SPEED_SCALE * timeMultiplier;
+              b.custom3DPivot.rotation.y += 0.008 * GLOBAL_SPEED_SCALE * dt * FLIGHT_TUNING.referenceFps * timeMultiplier;
             }
           }
         });
@@ -2451,57 +2468,43 @@ const Index = () => {
         // Flight physics
         if (flightModeActive) {
           const currentSpeed = shipVelocity.length();
-          let gearLevel = 1;
-          if (currentThrust >= 0.005) gearLevel = 4;
-          else if (currentThrust >= 0.001) gearLevel = 3;
-          else if (currentThrust >= 0.0002) gearLevel = 2;
-          const theoreticalMax = currentThrust * 300;
-          const movementRatio = Math.min(currentSpeed / theoreticalMax, 1.0) || 0;
-          const turnAuthority = movementRatio * (gearLevel * 0.25);
-          const pitchAccel = 0.4 * turnAuthority * dt;
-
-          if (keys.up) shipAngularVelocity.x += pitchAccel;
-          if (keys.down) shipAngularVelocity.x -= pitchAccel;
-
+          const gearLevel = gearForThrust(currentThrust);
+          const movementRatio = Math.min(currentSpeed / Math.max(currentThrust * 300, 0.001), 1);
+          const turnAuthority = 0.65 + 0.35 * movementRatio;
+          const canControl = !isExploded && !isTraveling;
+          const pitchInput = canControl ? Number(keys.up) - Number(keys.down) : 0;
+          const yawInput = canControl ? Number(keys.left) - Number(keys.right) : 0;
+          const steeringBlend = dampingFactor(FLIGHT_TUNING.steeringResponse, dt);
+          shipAngularVelocity.x += (pitchInput * FLIGHT_TUNING.pitchRate * turnAuthority - shipAngularVelocity.x) * steeringBlend;
+          shipAngularVelocity.y += (yawInput * FLIGHT_TUNING.turnRate * turnAuthority - shipAngularVelocity.y) * steeringBlend;
+          visualBank += (-yawInput * FLIGHT_TUNING.bankAngle - visualBank) * steeringBlend;
           const mesh = playerShip.getObjectByName('TheShipModel');
           if (mesh) {
-            let targetBank = 0;
-            if (keys.left) targetBank = -0.6 * turnAuthority;
-            if (keys.right) targetBank = 0.6 * turnAuthority;
-            const bankSpeed = 1.0 + 2.0 * turnAuthority;
-            mesh.rotation.z += (targetBank - mesh.rotation.z) * bankSpeed * dt;
-            // Aerodynamic barrel roll and weapon kickback
-            mesh.rotation.z += barrelRollState.z;
+            mesh.rotation.z = visualBank + barrelRollState.z;
             mesh.position.z = recoilState.z;
             mesh.rotation.x = recoilState.pitch;
-            shipAngularVelocity.y = mesh.rotation.z * -0.6 * turnAuthority;
           }
-          shipAngularVelocity.x *= Math.pow(0.01, dt);
-          const dq = new THREE.Quaternion().setFromEuler(new THREE.Euler(
-            shipAngularVelocity.x * dt * 60,
-            shipAngularVelocity.y * dt * 60,
-            0, 'YXZ'
-          ));
-          playerShip.quaternion.multiply(dq).normalize();
-
-          let targetGlow = 0;
-          if (keys.space) {
-            const dir = new THREE.Vector3(0,0,-1).applyQuaternion(playerShip.quaternion);
-            shipVelocity.add(dir.multiplyScalar(currentThrust * 60 * dt));
-            targetGlow = 2.5;
-            for (let i = 0; i < 3; i++) spawnTrailParticle();
-            audio.updateThrust(Math.min(currentThrust / 0.02, 1));
-          } else if (keys.brake) {
-            shipVelocity.multiplyScalar(Math.pow(0.1, dt));
-            targetGlow = 0.8;
-            audio.updateThrust(0.15);
-          } else {
-            audio.updateThrust(0);
+          if (canControl) {
+            const dq = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+              shipAngularVelocity.x * dt, shipAngularVelocity.y * dt, 0, 'YXZ'
+            ));
+            playerShip.quaternion.multiply(dq).normalize();
           }
-
+          const braking = canControl && keys.brake;
+          const thrusting = canControl && keys.space && !braking;
+          throttleEnvelope += ((thrusting ? 1 : 0) - throttleEnvelope) * dampingFactor(FLIGHT_TUNING.throttleResponse, dt);
+          if (canControl) {
+            const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(playerShip.quaternion);
+            shipVelocity.addScaledVector(dir, currentThrust * 60 * throttleEnvelope * dt);
+            if (braking) shipVelocity.multiplyScalar(Math.exp(-FLIGHT_TUNING.brakeDrag * dt));
+          }
+          if (thrusting) {
+            trailEmission += dt * FLIGHT_TUNING.trailRate;
+            while (trailEmission >= 1) { spawnTrailParticle(); trailEmission--; }
+          } else trailEmission = 0;
+          audio.updateThrust(throttleEnvelope * Math.min(currentThrust / 0.02, 1));
           if (engineGlow) {
-            engineGlow.intensity += (targetGlow - engineGlow.intensity) * 10 * dt;
-            engineGlow.visible = true;
+            engineGlow.intensity += (throttleEnvelope * 1.4 - engineGlow.intensity) * dampingFactor(10, dt);
           }
 
           // Newtonian gravity
@@ -2537,12 +2540,12 @@ const Index = () => {
             const fwd = new THREE.Vector3(0,0,-1).applyQuaternion(playerShip.quaternion);
             const fwdSpeed = shipVelocity.dot(fwd);
             const pureFwd = fwd.clone().multiplyScalar(fwdSpeed);
-            shipVelocity.lerp(pureFwd, 4.0 * dt);
+            shipVelocity.lerp(pureFwd, dampingFactor(FLIGHT_TUNING.lateralGrip, dt));
           }
-          shipVelocity.multiplyScalar(Math.pow(0.8, dt));
+          shipVelocity.multiplyScalar(Math.exp(-FLIGHT_TUNING.drag * dt));
 
           if (!isExploded) {
-            playerShip.position.add(shipVelocity);
+            if (!isTraveling) playerShip.position.addScaledVector(shipVelocity, dt * FLIGHT_TUNING.referenceFps);
             playerShip.updateMatrixWorld(true);
 
             // ── PLAYER FIRING LASER CANNONS ──
@@ -2652,7 +2655,7 @@ const Index = () => {
               const targetQuat = new THREE.Quaternion().setFromRotationMatrix(
                 new THREE.Matrix4().lookAt(enemy.mesh.position, playerShip.position, new THREE.Vector3(0, 1, 0))
               );
-              enemy.mesh.quaternion.slerp(targetQuat, 2.5 * dt);
+              enemy.mesh.quaternion.slerp(targetQuat, dampingFactor(2.5, dt));
 
               // Fly towards attack distance (~1.8 units away)
               const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(enemy.mesh.quaternion);
@@ -2707,7 +2710,7 @@ const Index = () => {
                 const targetQuat = new THREE.Quaternion().setFromRotationMatrix(
                   new THREE.Matrix4().lookAt(enemy.mesh.position, nextPos, new THREE.Vector3(0, 1, 0))
                 );
-                enemy.mesh.quaternion.slerp(targetQuat, 0.1);
+                enemy.mesh.quaternion.slerp(targetQuat, dampingFactor(6.32, dt));
               }
               enemy.mesh.position.copy(nextPos);
             }
@@ -2852,7 +2855,7 @@ const Index = () => {
 
           const mesh2 = playerShip.getObjectByName('TheShipModel');
           if (mesh2) mesh2.visible = !isExploded;
-          bloomPass.strength = isExploded ? 2.4 : 1.4;
+          bloomPass.strength = isExploded ? 0.9 : 0.65;
           const cOff = isExploded
             ? new THREE.Vector3(0, TARGET_SHIP_SIZE * 3.2 + 0.8, TARGET_SHIP_SIZE * 7.5 + 2.0).applyMatrix4(playerShip.matrixWorld)
             : new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.9 + 0.02, TARGET_SHIP_SIZE * 3.8 + 0.08).applyMatrix4(playerShip.matrixWorld);
@@ -2868,36 +2871,20 @@ const Index = () => {
           const tq = new THREE.Quaternion().setFromRotationMatrix(
             new THREE.Matrix4().lookAt(camera.position, lookTgt, upVec)
           );
-          camera.quaternion.slerp(tq, isExploded ? 0.2 : 0.1);
+          camera.quaternion.slerp(tq, dampingFactor(isExploded ? 13.4 : 6.32, dt));
         } else {
           controls.update();
           updateExplosion(dt);
         }
 
-        // Smooth travel animation
-        if (isTraveling && travelTarget) {
-          travelProgress += dt / TRAVEL_DURATION;
-          if (travelProgress >= 1) {
-            travelProgress = 1;
-            isTraveling = false;
-            isTransitioning = false;
-          }
-          const t = easeInOutCubic(Math.min(travelProgress, 1));
-          const wp = new THREE.Vector3(); travelTarget.getWorldPosition(wp);
-          const r = travelTarget.userData.radius || 4;
-          const destPos = new THREE.Vector3(wp.x + r * 3, wp.y + r * 1.5, wp.z + r * 3);
-
-          camera.position.lerpVectors(travelStartPos, destPos, t);
-          controls.target.lerpVectors(travelStartTarget, wp, t);
-        }
-        // Focus on clicked planet (non-travel)
-        else if (targetPlanet && !flightModeActive) {
+        // Travel is owned by Tween.js; the flight camera keeps its fixed offset.
+        if (targetPlanet && !flightModeActive && !isTraveling) {
           const wp = new THREE.Vector3(); targetPlanet.getWorldPosition(wp);
           controls.target.copy(wp);
           if (isTransitioning) {
             const r = targetPlanet.userData.radius || 4;
             const dp = new THREE.Vector3(wp.x+r*3, wp.y+r*1.5, wp.z+r*3);
-            camera.position.lerp(dp, 0.05);
+            camera.position.lerp(dp, dampingFactor(3.08, dt));
             if (camera.position.distanceTo(dp) < 0.5) isTransitioning = false;
           }
           if (targetPlanetData && targetPlanetData.type === 'planet') {
@@ -2916,7 +2903,7 @@ const Index = () => {
           }
         } else if (isTransitioning && !flightModeActive && !orreryMode) {
           const dp = new THREE.Vector3(controls.target.x, 60, controls.target.z+120);
-          camera.position.lerp(dp, 0.05);
+          camera.position.lerp(dp, dampingFactor(3.08, dt));
           if (camera.position.distanceTo(dp) < 1.0) isTransitioning = false;
         }
 
@@ -2931,6 +2918,10 @@ const Index = () => {
     // Cleanup
     return () => {
       cancelAnimationFrame(animFrameId);
+      animationGroup.removeAll();
+      window.removeEventListener('blur', releaseControls);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('contextmenu', onContextMenu);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('mousedown', onMouseDown);
