@@ -386,6 +386,112 @@
 .health-bar-fill.warning { background: var(--universe-warning); box-shadow: none; }
 .health-bar-fill.critical { background: var(--universe-critical); box-shadow: none; }
 #combat-hud { top: 78px; min-width: 0; width: 240px; }
+.mission-card {
+    background: var(--glass);
+    border: 1px solid var(--border-universe);
+    border-radius: 8px;
+    padding: 10px 14px;
+    box-shadow: var(--universe-shadow);
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    backdrop-filter: blur(8px);
+}
+.mission-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.72rem;
+    font-weight: 700;
+}
+.mission-badge {
+    color: var(--universe-accent);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+.mission-reward {
+    color: var(--success);
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 0.82rem;
+    font-weight: 700;
+}
+.mission-title {
+    color: var(--universe-text);
+    font-size: 0.92rem;
+    font-weight: 700;
+    letter-spacing: 0;
+}
+.mission-desc {
+    color: var(--universe-muted);
+    font-size: 0.76rem;
+    line-height: 1.25;
+}
+.mission-progress-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.72rem;
+    color: var(--universe-dim);
+    margin-top: 2px;
+}
+.mission-bar-container {
+    width: 100%;
+    height: 3px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+    overflow: hidden;
+}
+.mission-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--universe-accent), var(--success));
+    border-radius: 2px;
+    transition: width 0.2s ease-out;
+}
+
+#mission-nav-marker {
+    position: absolute;
+    top: 0; left: 0;
+    pointer-events: none;
+    z-index: 4;
+    transform: translate(-50%, -50%);
+    display: none;
+    font-family: 'Rajdhani', sans-serif;
+}
+.mission-marker-box {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+.mission-marker-diamond {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--universe-accent);
+    transform: rotate(45deg);
+    box-shadow: 0 0 10px rgba(118, 207, 227, 0.5);
+    animation: markerPulse 1.8s infinite ease-in-out;
+}
+@keyframes markerPulse {
+    0%, 100% { transform: rotate(45deg) scale(0.9); opacity: 0.8; }
+    50% { transform: rotate(45deg) scale(1.15); opacity: 1; }
+}
+.mission-marker-info {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: rgba(12, 18, 23, 0.85);
+    border: 1px solid var(--border-universe);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 0.72rem;
+    white-space: nowrap;
+}
+#mission-marker-name {
+    color: var(--universe-accent);
+    font-weight: 700;
+}
+#mission-marker-dist {
+    color: var(--universe-text);
+}
 #planet-navigator { max-width: calc(100% - 32px); flex-wrap: wrap; justify-content: center; border-radius: 8px; }
 #toast-message { max-width: calc(100% - 40px); text-align: center; letter-spacing: 0; }
 .top-nav { right: 20px; }
@@ -396,6 +502,7 @@
     .universe-root button { padding: 6px 9px; font-size: 0.8rem; }
     #combat-hud { top: 102px; left: 12px; width: 192px; }
     .combat-card { padding: 8px 10px; }
+    .mission-card { padding: 8px 10px; }
     #flight-hud { right: 12px; bottom: 168px; }
     .hud-row { gap: 8px; padding: 5px 8px; }
     #planet-navigator { bottom: 65px; width: calc(100% - 24px); max-width: none; }

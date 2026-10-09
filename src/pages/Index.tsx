@@ -8,6 +8,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import * as TWEEN from '@tweenjs/tween.js';
 import { SpaceAudioEngine } from '../lib/spaceAudio';
 import { dampingFactor, explosionScale, FLIGHT_TUNING, gearForThrust } from '../lib/flightTuning';
+import { calculateMissionProgress, formatMissionDistance, getMissionByIndex, type Mission } from '../lib/missions';
 import '../styles/universe.css';
 
 const Index = () => {
@@ -441,6 +442,8 @@ const Index = () => {
     const PLAYER_MAX_HEALTH = 100;
     let playerHealth = PLAYER_MAX_HEALTH;
     let enemiesKilled = 0;
+    let totalScore = 0;
+    let currentMissionIndex = 0;
     let lastPlayerShotTime = 0;
     const PLAYER_FIRE_COOLDOWN = 0.16; // rapid dual plasma cannons
 
@@ -855,6 +858,7 @@ const Index = () => {
         audio.playExplosion();
         audio.playKillScore();
         enemiesKilled++;
+        totalScore += 100;
         showToast(`🎯 TARGET DESTROYED: ${impactObjName.toUpperCase()} (+100 PTS)`);
         updateCombatStatsHUD();
       }
@@ -1117,7 +1121,7 @@ const Index = () => {
     function updateCombatStatsHUD() {
       const scoreEl = document.getElementById('combat-kills-text');
       if (scoreEl) {
-        scoreEl.innerText = `${enemiesKilled}`;
+        scoreEl.innerText = `${totalScore}`;
       }
       const enemyCountEl = document.getElementById('combat-enemies-text');
       if (enemyCountEl) {
@@ -1651,6 +1655,105 @@ const Index = () => {
     initEnemyFleet();
 
     // ════════════════════════════════════════════════════════════
+    //  3D HOLOGRAPHIC WAYPOINT BEACON & MISSION CAMPAIGN SYSTEM
+    // ════════════════════════════════════════════════════════════
+    const beaconGroup = new THREE.Group();
+    beaconGroup.name = 'MissionBeacon';
+    beaconGroup.visible = false;
+
+    const beaconCrystalGeo = new THREE.OctahedronGeometry(0.42, 0);
+    const beaconCrystalMat = new THREE.MeshStandardMaterial({
+      color: 0x76cfe3,
+      emissive: 0x76cfe3,
+      emissiveIntensity: 2.2,
+      roughness: 0.1,
+      metalness: 0.9,
+    });
+    const beaconCrystal = new THREE.Mesh(beaconCrystalGeo, beaconCrystalMat);
+    beaconGroup.add(beaconCrystal);
+
+    const beaconRing1Geo = new THREE.TorusGeometry(0.85, 0.025, 8, 36);
+    const beaconRingMat = new THREE.MeshStandardMaterial({
+      color: 0x76cfe3,
+      emissive: 0x76cfe3,
+      emissiveIntensity: 1.8,
+      transparent: true,
+      opacity: 0.85,
+      roughness: 0.2,
+    });
+    const beaconRing1 = new THREE.Mesh(beaconRing1Geo, beaconRingMat);
+    beaconGroup.add(beaconRing1);
+
+    const beaconRing2Geo = new THREE.TorusGeometry(1.25, 0.02, 8, 36);
+    const beaconRing2Mat = beaconRingMat.clone();
+    beaconRing2Mat.color.setHex(0x7cdbb0);
+    beaconRing2Mat.emissive.setHex(0x7cdbb0);
+    const beaconRing2 = new THREE.Mesh(beaconRing2Geo, beaconRing2Mat);
+    beaconGroup.add(beaconRing2);
+
+    const beaconBeamGeo = new THREE.CylinderGeometry(0.06, 0.3, 5.5, 16, 1, true);
+    const beaconBeamMat = new THREE.MeshBasicMaterial({
+      color: 0x76cfe3,
+      transparent: true,
+      opacity: 0.35,
+      side: THREE.DoubleSide,
+    });
+    const beaconBeam = new THREE.Mesh(beaconBeamGeo, beaconBeamMat);
+    beaconGroup.add(beaconBeam);
+
+    const beaconPointLight = new THREE.PointLight(0x76cfe3, 1.5, 18);
+    beaconGroup.add(beaconPointLight);
+
+    sceneSS.add(beaconGroup);
+
+    const currentBeaconTargetPos = new THREE.Vector3();
+    let missionInitialDistance = 45;
+    let lastMissionId = -1;
+
+    function getMissionWorldPosition(mission: Mission, out: THREE.Vector3): boolean {
+      if (mission.targetName === 'Asteroid Belt') {
+        const offset = mission.targetOffset || { x: 43.5, y: 0.3, z: 0 };
+        out.set(offset.x, offset.y, offset.z);
+        return true;
+      }
+      if (mission.targetName === 'The Sun' || mission.targetName === 'Sun') {
+        sunMesh.getWorldPosition(out);
+        if (mission.targetOffset) {
+          out.x += mission.targetOffset.x;
+          out.y += mission.targetOffset.y;
+          out.z += mission.targetOffset.z;
+        }
+        return true;
+      }
+      const body = ssBodies.find((b: any) => b.mesh?.userData?.name === mission.targetName);
+      if (body && body.mesh) {
+        body.mesh.getWorldPosition(out);
+        if (mission.targetOffset) {
+          out.x += mission.targetOffset.x;
+          out.y += mission.targetOffset.y;
+          out.z += mission.targetOffset.z;
+        }
+        return true;
+      }
+      return false;
+    }
+
+    function updateMissionHUD() {
+      const mission = getMissionByIndex(currentMissionIndex);
+      if (!mission) return;
+
+      const titleEl = document.getElementById('mission-title-text');
+      const descEl = document.getElementById('mission-desc-text');
+      const rewardEl = document.getElementById('mission-reward-text');
+      const markerNameEl = document.getElementById('mission-marker-name');
+
+      if (titleEl) titleEl.innerText = mission.title;
+      if (descEl) descEl.innerText = mission.briefing;
+      if (rewardEl) rewardEl.innerText = `+${mission.reward} PTS`;
+      if (markerNameEl) markerNameEl.innerText = mission.targetName.toUpperCase();
+    }
+
+    // ════════════════════════════════════════════════════════════
     //  EVENTS
     // ════════════════════════════════════════════════════════════
     const onKeyDown = (e: KeyboardEvent) => {
@@ -1822,7 +1925,6 @@ const Index = () => {
 
     // ── TRAVEL STATE ──
     let travelTarget: THREE.Mesh | null = null;
-    let travelProgress = 0;
     const travelStartPos = new THREE.Vector3();
     const travelStartTarget = new THREE.Vector3();
     let isTraveling = false;
@@ -1967,6 +2069,9 @@ const Index = () => {
       initAudio(); audio.playTransition();
       document.querySelectorAll('.score-popup-item').forEach(el => el.remove());
       setAimZoom(false);
+      beaconGroup.visible = false;
+      const markerEl = document.getElementById('mission-nav-marker');
+      if (markerEl) markerEl.style.display = 'none';
       fadeOverlay.style.opacity = '1';
       setTimeout(() => {
         flightModeActive = false; gravityEnabled = false; orreryMode = false;
@@ -2020,10 +2125,14 @@ const Index = () => {
         camera.position.copy(off);
         updateHealthHUD();
         updateCombatStatsHUD();
+        updateMissionHUD();
         showToast("SPACE COMBAT ENGAGED ── A / SPACE / CLICK / F TO FIRE · 1-4 SPEED");
       } else {
         document.querySelectorAll('.score-popup-item').forEach(el => el.remove());
         setAimZoom(false);
+        beaconGroup.visible = false;
+        const markerEl = document.getElementById('mission-nav-marker');
+        if (markerEl) markerEl.style.display = 'none';
         document.getElementById('btn-flight-mode')!.innerText = '🚀 Pilot Ship';
         document.getElementById('btn-flight-mode')!.className = 'btn-success';
         isTransitioning = true;
@@ -2846,6 +2955,103 @@ const Index = () => {
           updateLaserImpacts(dt);
           updateExplosion(dt);
 
+          // ── MISSION & HOLOGRAPHIC WAYPOINT UPDATE ──
+          if (!isExploded) {
+            const activeMission = getMissionByIndex(currentMissionIndex);
+            if (activeMission) {
+              if (lastMissionId !== activeMission.id) {
+                lastMissionId = activeMission.id;
+                updateMissionHUD();
+                if (getMissionWorldPosition(activeMission, currentBeaconTargetPos)) {
+                  missionInitialDistance = Math.max(20, playerShip.position.distanceTo(currentBeaconTargetPos));
+                }
+              }
+
+              if (getMissionWorldPosition(activeMission, currentBeaconTargetPos)) {
+                beaconGroup.position.copy(currentBeaconTargetPos);
+                beaconGroup.visible = true;
+
+                // Animate holographic beacon
+                beaconRing1.rotation.x += 1.4 * dt;
+                beaconRing1.rotation.y += 0.9 * dt;
+                beaconRing2.rotation.y -= 1.6 * dt;
+                beaconRing2.rotation.z += 1.1 * dt;
+                beaconCrystal.position.y = Math.sin(animationTime * 0.0035) * 0.15;
+                beaconCrystal.rotation.y += 2.0 * dt;
+                beaconPointLight.intensity = 1.2 + Math.sin(animationTime * 0.006) * 0.5;
+
+                const distToTarget = playerShip.position.distanceTo(currentBeaconTargetPos);
+
+                // Update HUD distance & progress
+                const distEl = document.getElementById('mission-dist-text');
+                const barEl = document.getElementById('mission-bar-fill');
+                const markerDistEl = document.getElementById('mission-marker-dist');
+                if (distEl) distEl.innerText = formatMissionDistance(distToTarget);
+                if (markerDistEl) markerDistEl.innerText = formatMissionDistance(distToTarget);
+                if (barEl) {
+                  const progress = calculateMissionProgress(distToTarget, activeMission.completionRadius, missionInitialDistance);
+                  barEl.style.width = `${progress}%`;
+                }
+
+                // 2D Viewport marker projection
+                const markerEl = document.getElementById('mission-nav-marker');
+                if (markerEl) {
+                  const screenPos = currentBeaconTargetPos.clone().project(camera);
+                  const toTarget = currentBeaconTargetPos.clone().sub(camera.position);
+                  const cameraDir = new THREE.Vector3();
+                  camera.getWorldDirection(cameraDir);
+                  const inFront = toTarget.dot(cameraDir) > 0;
+
+                  if (inFront && screenPos.z < 1.0) {
+                    const screenX = (screenPos.x * 0.5 + 0.5) * window.innerWidth;
+                    const screenY = (-screenPos.y * 0.5 + 0.5) * window.innerHeight;
+                    markerEl.style.left = `${screenX}px`;
+                    markerEl.style.top = `${screenY}px`;
+                    markerEl.style.display = 'block';
+                  } else {
+                    markerEl.style.display = 'none';
+                  }
+                }
+
+                // Check mission completion
+                if (distToTarget <= activeMission.completionRadius) {
+                  totalScore += activeMission.reward;
+                  initAudio();
+                  audio.playMissionComplete();
+                  showScorePopup(`🏆 MISSÃO CUMPRIDA! +${activeMission.reward} PTS`, '#7cdbb0');
+                  showToast(`🎉 OBJETIVO CONCLUÍDO: ${activeMission.title}! RECOMPENSA: +${activeMission.reward} PTS`);
+                  updateCombatStatsHUD();
+
+                  // Celebratory ring pulse via Tween.js
+                  const pulseObj = { scale: 1.0, opacity: 0.9 };
+                  new TWEEN.Tween(pulseObj, animationGroup)
+                    .to({ scale: 3.5, opacity: 0 }, 750)
+                    .easing(TWEEN.Easing.Quadratic.Out)
+                    .onUpdate(() => {
+                      beaconRing2.scale.setScalar(pulseObj.scale);
+                      beaconRing2Mat.opacity = pulseObj.opacity;
+                    })
+                    .onComplete(() => {
+                      beaconRing2.scale.setScalar(1.0);
+                      beaconRing2Mat.opacity = 0.85;
+                    })
+                    .start(animationTime);
+
+                  currentMissionIndex++;
+                  const nextMission = getMissionByIndex(currentMissionIndex);
+                  updateMissionHUD();
+                  if (getMissionWorldPosition(nextMission, currentBeaconTargetPos)) {
+                    missionInitialDistance = Math.max(20, playerShip.position.distanceTo(currentBeaconTargetPos));
+                  }
+                }
+              }
+            }
+          } else {
+            beaconGroup.visible = false;
+            const markerEl = document.getElementById('mission-nav-marker');
+            if (markerEl) markerEl.style.display = 'none';
+          }
+
           document.getElementById('fhud-speed')!.innerText = isExploded ? '0.00000' : shipVelocity.length().toFixed(5);
           const thrPct = ({0.0002:5, 0.001:25, 0.005:60, 0.02:100} as any)[currentThrust] || 5;
           document.getElementById('fhud-thrust-bar')!.style.width = isExploded ? '0%' : (thrPct + '%');
@@ -2873,6 +3079,9 @@ const Index = () => {
           );
           camera.quaternion.slerp(tq, dampingFactor(isExploded ? 13.4 : 6.32, dt));
         } else {
+          beaconGroup.visible = false;
+          const markerEl = document.getElementById('mission-nav-marker');
+          if (markerEl) markerEl.style.display = 'none';
           controls.update();
           updateExplosion(dt);
         }
@@ -2919,6 +3128,11 @@ const Index = () => {
     return () => {
       cancelAnimationFrame(animFrameId);
       animationGroup.removeAll();
+      sceneSS.remove(beaconGroup);
+      beaconCrystalGeo.dispose(); beaconCrystalMat.dispose();
+      beaconRing1Geo.dispose(); beaconRingMat.dispose();
+      beaconRing2Geo.dispose(); beaconRing2Mat.dispose();
+      beaconBeamGeo.dispose(); beaconBeamMat.dispose();
       window.removeEventListener('blur', releaseControls);
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('contextmenu', onContextMenu);
@@ -3025,7 +3239,7 @@ const Index = () => {
           <button id="btn-200x">⏭ 200×</button>
         </div>
 
-        {/* COMBAT HUD: HEALTH BAR & ENEMY STATS */}
+        {/* COMBAT HUD: HEALTH BAR, ENEMY STATS & MISSION CARD */}
         <div id="combat-hud">
           <div className="combat-card">
             <div className="combat-header">
@@ -3041,6 +3255,23 @@ const Index = () => {
             </div>
             <div className="combat-controls-tip">
               ⚔ KEY A: CANNONS · SPACE: THRUST · 1-4: GEARS
+            </div>
+          </div>
+
+          {/* ACTIVE MISSION OBJECTIVE CARD */}
+          <div className="mission-card" id="mission-hud-card">
+            <div className="mission-header">
+              <span className="mission-badge">OBJETIVO ATIVO</span>
+              <span className="mission-reward" id="mission-reward-text">+250 PTS</span>
+            </div>
+            <div className="mission-title" id="mission-title-text">1. Reconhecimento Lunar</div>
+            <div className="mission-desc" id="mission-desc-text">Aproxime-se do sinalizador orbital na Lua</div>
+            <div className="mission-progress-row">
+              <span>DISTÂNCIA</span>
+              <span id="mission-dist-text">—</span>
+            </div>
+            <div className="mission-bar-container">
+              <div className="mission-bar-fill" id="mission-bar-fill" style={{ width: '0%' }} />
             </div>
           </div>
         </div>
@@ -3094,6 +3325,17 @@ const Index = () => {
             </div>
           </div>
         ))}
+      </div>
+
+      {/* 3D HOLOGRAPHIC MISSION WAYPOINT HUD */}
+      <div id="mission-nav-marker">
+        <div className="mission-marker-box">
+          <div className="mission-marker-diamond" />
+          <div className="mission-marker-info">
+            <span id="mission-marker-name">THE MOON</span>
+            <span id="mission-marker-dist">—</span>
+          </div>
+        </div>
       </div>
 
       {/* TARGET MARKER */}

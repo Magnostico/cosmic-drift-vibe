@@ -527,6 +527,30 @@ export class SpaceAudioEngine {
     });
   }
 
+  /** Mission / Objective completed fanfare */
+  playMissionComplete() {
+    this.init();
+    if (!this.ctx || !this.masterGain) return;
+    const ctx = this.ctx;
+    const t0 = ctx.currentTime;
+
+    const notes = [523.25, 659.25, 783.99, 1046.50];
+    notes.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, t0 + idx * 0.08);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.24, t0 + idx * 0.08);
+      gain.gain.exponentialRampToValueAtTime(0.001, t0 + idx * 0.08 + 0.45);
+
+      osc.connect(gain);
+      gain.connect(this.masterGain!);
+      osc.start(t0 + idx * 0.08);
+      osc.stop(t0 + idx * 0.08 + 0.48);
+    });
+  }
+
   dispose() {
     this.disposed = true;
     try {
