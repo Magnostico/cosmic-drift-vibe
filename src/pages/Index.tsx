@@ -7,7 +7,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import * as TWEEN from '@tweenjs/tween.js';
 import { SpaceAudioEngine } from '../lib/spaceAudio';
-import { dampingFactor, explosionScale, FLIGHT_TUNING, gearForThrust } from '../lib/flightTuning';
+import { dampingFactor, explosionScale, FLIGHT_TUNING, gearForThrust, VESSEL_SCALE } from '../lib/flightTuning';
 import { calculateMissionProgress, formatMissionDistance, getMissionByIndex, type Mission } from '../lib/missions';
 import '../styles/universe.css';
 
@@ -24,8 +24,7 @@ const Index = () => {
     //  UNIVERSE V3.0 — STELLAR EDITION
     // ════════════════════════════════════════════════════════════
 
-    // Scaled micro-vessel size (Sun radius = 12.0, Earth = 1.0, Moon = 0.3)
-    // Spaceship size is finely calibrated so it feels like an authentic vessel against planetary scale
+    // Preserve existing camera calibration; actual hull dimensions are independent.
     const TARGET_SHIP_SIZE = 0.045;
     const GLOBAL_SPEED_SCALE = 0.01;
     const G_CONSTANT = 0.0000008;
@@ -512,7 +511,7 @@ const Index = () => {
     }
 
     // 4. Hexagonal Energy Deflector Shield
-    const shieldGeo = new THREE.SphereGeometry(TARGET_SHIP_SIZE * 2.2, 24, 24);
+    const shieldGeo = new THREE.SphereGeometry(VESSEL_SCALE.playerLength * 0.85, 24, 24);
     const shieldMat = new THREE.MeshBasicMaterial({
       color: 0x00e5ff,
       wireframe: true,
@@ -585,7 +584,7 @@ const Index = () => {
     const EXPLOSION_RESPAWN_DELAY = 1.8;
 
     // 1. Dynamic Flash Light
-    const explosionLight = new THREE.PointLight(0xff9933, 0, 10.0, 1.2);
+    const explosionLight = new THREE.PointLight(sceneColor('--blast-fire'), 0, 0.1, 1.2);
     sceneSS.add(explosionLight);
 
     // 2. Volumetric 3D Fireball Core (The Original Deforming Organic Plumes Mesh)
@@ -595,9 +594,9 @@ const Index = () => {
       uniforms: {
         uTime: { value: 0.0 },
         uProgress: { value: 0.0 }, // 0 = start of explosion, 1 = dissipated
-        uColorCore: { value: new THREE.Color(0xffffff) },
-        uColorFire: { value: new THREE.Color(0xff8800) },
-        uColorDark: { value: new THREE.Color(0x220500) }
+        uColorCore: { value: new THREE.Color(sceneColor('--blast-core')) },
+        uColorFire: { value: new THREE.Color(sceneColor('--blast-fire')) },
+        uColorDark: { value: new THREE.Color(sceneColor('--blast-ember')) }
       },
       vertexShader: `
         uniform float uTime;
@@ -664,8 +663,8 @@ const Index = () => {
           vNoise = n * 0.7 + n2 * 0.3;
 
           // Expansion scale curve: rapid blast then slow billow
-          float expand = pow(max(uProgress, 0.001), 0.35) * 6.5;
-          vec3 displaced = position * (1.0 + expand) + normal * (vNoise * (0.8 + expand * 0.5));
+          // Expansion belongs to the shared scale curve, not a second hidden multiplier.
+          vec3 displaced = position + normal * (vNoise * 0.22);
           gl_Position = projectionMatrix * modelViewMatrix * vec4(displaced, 1.0);
         }
       `,
@@ -686,7 +685,7 @@ const Index = () => {
 
           float alpha = clamp((1.0 - uProgress) * (1.0 - uProgress), 0.0, 1.0);
           if (alpha <= 0.005) discard;
-          gl_FragColor = vec4(col * (1.5 + (1.0 - uProgress) * 2.5), alpha);
+          gl_FragColor = vec4(col * (0.8 + (1.0 - uProgress) * 1.1), alpha);
         }
       `,
       transparent: true,
@@ -697,6 +696,17 @@ const Index = () => {
     const fireballMesh = new THREE.Mesh(fireballGeo, fireballMat);
     fireballMesh.visible = false;
     sceneSS.add(fireballMesh);
+
+    // Cooling gas follows the flash, with normal blending instead of a glowing white sphere.
+    const smokeMat = new THREE.MeshBasicMaterial({
+      color: sceneColor('--blast-smoke'), transparent: true, opacity: 0,
+      depthWrite: false,
+    });
+    const smokeMesh = new THREE.Mesh(fireballGeo, smokeMat);
+    smokeMesh.visible = false;
+    sceneSS.add(smokeMesh);
+    let activeSmokeTween: TWEEN.Tween<{ scale: number; opacity: number }> | null = null;
+    let activeDebrisTween: TWEEN.Tween<{ emissive: number }> | null = null;
 
     // 3. Dense Fiery & Plasma Particle Burst System (450 High-Speed Embers)
     const EXP_PARTICLE_COUNT = 450;
@@ -715,7 +725,7 @@ const Index = () => {
     const expSizes = new Float32Array(EXP_PARTICLE_COUNT);
     expGeo.setAttribute('position', new THREE.BufferAttribute(expPos, 3));
     expGeo.setAttribute('color', new THREE.BufferAttribute(expCol, 3));
-    expGeo.setAttribute('size', new THREE.BufferAttribute(expSizes, 1));
+    expGeo.setAttribute('particleScale', new THREE.BufferAttribute(expSizes, 1));
 
     const fireTex = (() => {
       const c = document.createElement('canvas'); c.width = 128; c.height = 128;
@@ -733,11 +743,19 @@ const Index = () => {
     })();
 
     const expMat = new THREE.PointsMaterial({
-      size: 0.085, vertexColors: true, map: fireTex,
+      size: VESSEL_SCALE.playerLength * 0.045, vertexColors: true, map: fireTex,
       transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
       sizeAttenuation: true
     });
+    expMat.onBeforeCompile = shader => {
+      shader.vertexShader = 'attribute float particleScale;\n' + shader.vertexShader;
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <logdepthbuf_vertex>',
+        'gl_PointSize *= particleScale;\n#include <logdepthbuf_vertex>'
+      );
+    };
     const expPoints = new THREE.Points(expGeo, expMat);
+    expPoints.frustumCulled = false;
     expPoints.visible = false;
     sceneSS.add(expPoints);
 
@@ -755,8 +773,8 @@ const Index = () => {
     }[] = [];
     const shardGeo = new THREE.TetrahedronGeometry(0.35, 0);
     const shardMat = new THREE.MeshStandardMaterial({
-      color: 0x18181f,
-      emissive: 0xff3300,
+      color: sceneColor('--blast-hull'),
+      emissive: sceneColor('--blast-ember'),
       emissiveIntensity: 2.5,
       roughness: 0.3,
       metalness: 0.95
@@ -779,7 +797,7 @@ const Index = () => {
     // 5. Dual Spherical Shockwaves (Inner High-Energy Blast + Outer Dissipating Corona)
     const shockwaveGeo = new THREE.RingGeometry(0.1, 0.8, 64);
     const shockwaveMat = new THREE.MeshBasicMaterial({
-      color: 0xffbb55,
+      color: sceneColor('--blast-fire'),
       side: THREE.DoubleSide,
       transparent: true,
       opacity: 0,
@@ -795,7 +813,7 @@ const Index = () => {
       uniforms: {
         c: { value: 0.5 },
         p: { value: 3.5 },
-        glowColor: { value: new THREE.Color(0xff8822) },
+        glowColor: { value: new THREE.Color(sceneColor('--blast-fire')) },
         opacityVal: { value: 0.0 }
       },
       vertexShader: `
@@ -830,7 +848,8 @@ const Index = () => {
 
     function triggerExplosion(impactPoint: THREE.Vector3, impactObjName = 'Space Object', isPlayer = true) {
       if (isPlayer && isExploded) return;
-      const blast = explosionScale(TARGET_SHIP_SIZE * (isPlayer ? 1.5 : 1.6));
+      const vesselLength = isPlayer ? VESSEL_SCALE.playerLength : VESSEL_SCALE.enemyLength;
+      const blast = explosionScale(vesselLength);
       explosionTimer = EXPLOSION_RESPAWN_DELAY;
       explosionLight.distance = blast.lightRange;
       expMat.size = blast.sparkSize;
@@ -865,7 +884,8 @@ const Index = () => {
 
       // Camera Shake via Tween.js
       if (activeShakeTween) activeShakeTween.stop();
-      const shakeObj = { intensity: isPlayer ? 0.75 : 0.35 };
+      const proximity = Math.min(1, vesselLength * 16 / Math.max(camera.position.distanceTo(impactPoint), vesselLength));
+      const shakeObj = { intensity: (isPlayer ? 0.12 : 0.04) * proximity };
       activeShakeTween = new TWEEN.Tween(shakeObj, animationGroup)
         .to({ intensity: 0 }, isPlayer ? 950 : 450)
         .easing(TWEEN.Easing.Cubic.Out)
@@ -877,7 +897,8 @@ const Index = () => {
       // 1. Dynamic Flash Light (calibrated realistic glow via Tween.js)
       explosionLight.position.copy(impactPoint);
       if (activeLightTween) activeLightTween.stop();
-      const lightObj = { intensity: isPlayer ? 7.5 : 4.5 };
+      const lightObj = { intensity: isPlayer ? 0.65 : 0.4 };
+      explosionLight.intensity = lightObj.intensity;
       activeLightTween = new TWEEN.Tween(lightObj, animationGroup)
         .to({ intensity: 0 }, 420)
         .easing(TWEEN.Easing.Exponential.Out)
@@ -897,7 +918,7 @@ const Index = () => {
       fireballMesh.scale.setScalar(blast.coreStart);
       const targetScale = blast.coreEnd;
       activeExplosionTween = new TWEEN.Tween(fbObj, animationGroup)
-        .to({ progress: 1.0, scale: targetScale }, 1500)
+        .to({ progress: 1.0, scale: targetScale }, 850)
         .easing(TWEEN.Easing.Cubic.Out)
         .onUpdate(() => {
           fireballMat.uniforms.uProgress.value = fbObj.progress;
@@ -905,10 +926,22 @@ const Index = () => {
         })
         .onComplete(() => {
           fireballMesh.visible = false;
-          if (isPlayer) {
-            respawnShip();
-          }
         })
+        .start(animationTime);
+
+      if (activeSmokeTween) activeSmokeTween.stop();
+      smokeMesh.position.copy(impactPoint);
+      smokeMesh.scale.setScalar(blast.coreStart);
+      smokeMat.opacity = 0;
+      smokeMesh.visible = true;
+      const smokeObj = { scale: blast.coreStart, opacity: 0 };
+      activeSmokeTween = new TWEEN.Tween(smokeObj, animationGroup)
+        .to({ scale: blast.smokeEnd, opacity: 1 }, 1550)
+        .onUpdate(() => {
+          smokeMesh.scale.setScalar(smokeObj.scale);
+          smokeMat.opacity = Math.sin(smokeObj.opacity * Math.PI) * 0.24;
+        })
+        .onComplete(() => { smokeMesh.visible = false; })
         .start(animationTime);
 
       // 3. Shockwave Ring & Corona Sphere via Tween.js (Scaled to fit vessel)
@@ -960,18 +993,11 @@ const Index = () => {
           Math.cos(phi)
         ).multiplyScalar(speed);
 
-        const colors = [
-          new THREE.Color(0xffffff),
-          new THREE.Color(0xffeedd),
-          new THREE.Color(0xffcc44),
-          new THREE.Color(0xff7711),
-          new THREE.Color(0xee2200),
-          new THREE.Color(0x990500)
-        ];
+        const colors = ['--blast-core', '--blast-fire', '--blast-ember'].map(token => new THREE.Color(sceneColor(token)));
         const color = colors[Math.floor(Math.random() * colors.length)];
 
         expParticles.push({
-          pos: impactPoint.clone().add(new THREE.Vector3((Math.random()-0.5)*0.03, (Math.random()-0.5)*0.03, (Math.random()-0.5)*0.03)),
+          pos: impactPoint.clone().add(new THREE.Vector3((Math.random()-0.5)*blast.spawnSpread, (Math.random()-0.5)*blast.spawnSpread, (Math.random()-0.5)*blast.spawnSpread)),
           vel,
           life: 1.0,
           maxLife: 0.9 + Math.random() * 0.8,
@@ -1005,7 +1031,8 @@ const Index = () => {
 
       // Shrapnel emissive cooling via Tween.js
       const debrisCool = { emissive: 2.5 };
-      new TWEEN.Tween(debrisCool, animationGroup)
+      if (activeDebrisTween) activeDebrisTween.stop();
+      activeDebrisTween = new TWEEN.Tween(debrisCool, animationGroup)
         .to({ emissive: 0 }, 1400)
         .easing(TWEEN.Easing.Exponential.Out)
         .onUpdate(() => {
@@ -1022,6 +1049,7 @@ const Index = () => {
     function updateExplosion(dt: number) {
       if (explosionTimer <= 0 && cameraShakeIntensity <= 0) {
         fireballMesh.visible = false;
+        smokeMesh.visible = false;
         shockwaveMesh.visible = false;
         shockwaveSphere.visible = false;
         expPoints.visible = false;
@@ -1047,7 +1075,7 @@ const Index = () => {
           if (p.life > 0) {
             p.life -= dt / p.maxLife;
             p.pos.addScaledVector(p.vel, dt);
-            p.vel.multiplyScalar(Math.pow(0.85, dt * 60)); // aerodynamic drag in expanding gas plume
+            p.vel.multiplyScalar(Math.exp(-1.8 * dt));
             const t = Math.max(0, p.life);
 
             expPos[i * 3] = p.pos.x;
@@ -1067,7 +1095,7 @@ const Index = () => {
         }
         expGeo.attributes.position.needsUpdate = true;
         expGeo.attributes.color.needsUpdate = true;
-        expGeo.attributes.size.needsUpdate = true;
+        expGeo.attributes.particleScale.needsUpdate = true;
         if (activeParticles === 0) expPoints.visible = false;
 
         // 4. Update Hull Shards Debris
@@ -1085,11 +1113,13 @@ const Index = () => {
         // Hide all elements when timer expires
         if (explosionTimer <= 0) {
           fireballMesh.visible = false;
+          smokeMesh.visible = false;
           shockwaveMesh.visible = false;
           shockwaveSphere.visible = false;
           expPoints.visible = false;
           debrisGroup.visible = false;
           explosionLight.intensity = 0;
+          if (isExploded) respawnShip();
         }
       }
 
@@ -1142,6 +1172,7 @@ const Index = () => {
 
       // Clean up explosion artifacts
       fireballMesh.visible = false;
+      smokeMesh.visible = false;
       expPoints.visible = false;
       debrisGroup.visible = false;
       shockwaveMesh.visible = false;
@@ -1172,7 +1203,7 @@ const Index = () => {
     })();
 
     const trailMat = new THREE.PointsMaterial({
-      size: TARGET_SHIP_SIZE * 0.16, vertexColors: true, map: trailTex,
+      size: VESSEL_SCALE.playerLength * 0.16, vertexColors: true, map: trailTex,
       transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
       sizeAttenuation: true
     });
@@ -1185,7 +1216,7 @@ const Index = () => {
     let trailIndex = 0;
 
     function spawnTrailParticle() {
-      const exhaust = new THREE.Vector3(0, 0, TARGET_SHIP_SIZE * 0.55).applyMatrix4(playerShip.matrixWorld);
+      const exhaust = new THREE.Vector3(0, 0, VESSEL_SCALE.playerLength * 0.55).applyMatrix4(playerShip.matrixWorld);
       const p = trailParticles[trailIndex % TRAIL_COUNT];
       p.pos.copy(exhaust);
       p.life = 1.0;
@@ -1284,6 +1315,7 @@ const Index = () => {
       engineGlow.position.set(0, 0, TARGET_SHIP_SIZE * 0.5);
       shipMeshGroup.add(engineGlow);
 
+      shipMeshGroup.scale.setScalar(VESSEL_SCALE.playerLength / (TARGET_SHIP_SIZE * 1.3));
       playerShip.add(shipMeshGroup);
     }
     buildProceduralShip();
@@ -1477,7 +1509,7 @@ const Index = () => {
     function createTieDefenderShip(): THREE.Group {
       const enemyGroup = new THREE.Group();
       // Visual scale calibrated for space combat visibility
-      const scale = TARGET_SHIP_SIZE * 0.7;
+      const scale = VESSEL_SCALE.enemyLength / 2.5;
 
       if (customEnemyModelTemplate) {
         const clonedModel = customEnemyModelTemplate.clone(true);
@@ -2210,7 +2242,7 @@ const Index = () => {
       });
       const box = new THREE.Box3().setFromObject(model);
       const sz = new THREE.Vector3(); box.getSize(sz);
-      const scale = (TARGET_SHIP_SIZE * 1.5) / Math.max(sz.x, sz.y, sz.z);
+      const scale = VESSEL_SCALE.playerLength / (Math.max(sz.x, sz.y, sz.z) || 1);
       model.scale.setScalar(scale);
       const sc = new THREE.Box3().setFromObject(model);
       const ctr = new THREE.Vector3(); sc.getCenter(ctr);
@@ -2221,8 +2253,8 @@ const Index = () => {
       // Facing forward (-Z flight trajectory)
       wrap.rotation.y = 0;
       playerShip.add(wrap);
-      engineGlow = new THREE.PointLight(0x00e5ff, 2.5, TARGET_SHIP_SIZE * 40);
-      engineGlow.position.set(0, 0, TARGET_SHIP_SIZE * 0.6);
+      engineGlow = new THREE.PointLight(0x00e5ff, 2.5, VESSEL_SCALE.playerLength * 8);
+      engineGlow.position.set(0, 0, VESSEL_SCALE.playerLength * 0.5);
       playerShip.add(engineGlow);
     }
 
@@ -2241,7 +2273,7 @@ const Index = () => {
       });
       const box = new THREE.Box3().setFromObject(model);
       const sz = new THREE.Vector3(); box.getSize(sz);
-      const targetDim = TARGET_SHIP_SIZE * 1.6;
+      const targetDim = VESSEL_SCALE.enemyLength;
       const scale = targetDim / Math.max(sz.x, sz.y, sz.z);
       model.scale.setScalar(scale);
       const sc = new THREE.Box3().setFromObject(model);
@@ -2688,11 +2720,11 @@ const Index = () => {
 
               // Dual wingtip laser salvos
               const leftNozzle = playerShip.position.clone()
-                .addScaledVector(right, -TARGET_SHIP_SIZE * 0.4)
-                .addScaledVector(fwd, TARGET_SHIP_SIZE * 0.5);
+                .addScaledVector(right, -VESSEL_SCALE.playerLength * 0.4)
+                .addScaledVector(fwd, VESSEL_SCALE.playerLength * 0.5);
               const rightNozzle = playerShip.position.clone()
-                .addScaledVector(right, TARGET_SHIP_SIZE * 0.4)
-                .addScaledVector(fwd, TARGET_SHIP_SIZE * 0.5);
+                .addScaledVector(right, VESSEL_SCALE.playerLength * 0.4)
+                .addScaledVector(fwd, VESSEL_SCALE.playerLength * 0.5);
 
               spawnLaserBolt(leftNozzle, fireDir, true);
               spawnLaserBolt(rightNozzle, fireDir, true);
@@ -2705,7 +2737,7 @@ const Index = () => {
 
             // ── COLLISION DETECTION ──
             const shipPos = playerShip.position;
-            const shipRadius = TARGET_SHIP_SIZE * 0.4;
+            const shipRadius = VESSEL_SCALE.playerLength * 0.5;
 
             // 1. Collision with Sun (radius ~ 6.0)
             const sunDist = shipPos.distanceTo(sunMesh.position);
@@ -2798,7 +2830,7 @@ const Index = () => {
               }
 
               // Ramming collision check with player
-              if (distToPlayer < TARGET_SHIP_SIZE * 2.0 && !isExploded) {
+              if (distToPlayer < (VESSEL_SCALE.playerLength + VESSEL_SCALE.enemyLength) * 0.5 && !isExploded) {
                 triggerExplosion(enemy.mesh.position.clone(), 'Enemy TIE Fighter', false);
                 enemy.active = false;
                 enemy.mesh.visible = false;
@@ -3128,6 +3160,8 @@ const Index = () => {
     return () => {
       cancelAnimationFrame(animFrameId);
       animationGroup.removeAll();
+      sceneSS.remove(smokeMesh);
+      smokeMat.dispose();
       sceneSS.remove(beaconGroup);
       beaconCrystalGeo.dispose(); beaconCrystalMat.dispose();
       beaconRing1Geo.dispose(); beaconRingMat.dispose();
