@@ -1,8 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { dampingFactor, explosionScale, FLIGHT_GEARS, FLIGHT_TUNING, gearForThrust } from '../lib/flightTuning';
+import { dampingFactor, explosionScale, FLIGHT_GEARS, FLIGHT_TUNING, gearForThrust, VESSEL_SCALE } from '../lib/flightTuning';
 import { Group, Tween, Easing } from '@tweenjs/tween.js';
 
 describe('flight tuning', () => {
+  it('keeps vessels small against the smallest planet and asteroids', () => {
+    expect(VESSEL_SCALE.playerLength / 0.6).toBeLessThan(0.025);
+    expect(VESSEL_SCALE.enemyLength).toBeLessThan(VESSEL_SCALE.playerLength);
+    expect(VESSEL_SCALE.playerLength).toBeLessThan(0.1);
+  });
+  it('bounds the actual fireball, shockwave and spawn spread by vessel scale', () => {
+    const blast = explosionScale(VESSEL_SCALE.playerLength);
+    expect(0.8 * 1.4 * blast.coreEnd).toBeLessThan(VESSEL_SCALE.playerLength * 1.5);
+    expect(blast.spawnSpread).toBeLessThan(VESSEL_SCALE.playerLength / 2);
+    expect(blast.lightRange).toBeLessThan(0.1);
+  });
   it('reports all four gears correctly', () => {
     expect(FLIGHT_GEARS.map(gearForThrust)).toEqual([1, 2, 3, 4]);
   });
