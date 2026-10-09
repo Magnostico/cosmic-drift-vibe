@@ -2742,6 +2742,7 @@ const Index = () => {
             // 1. Collision with Sun (radius ~ 6.0)
             const sunDist = shipPos.distanceTo(sunMesh.position);
             if (sunDist < 6.0 + shipRadius) {
+              shipPos.sub(sunMesh.position).normalize().multiplyScalar(6.0 + shipRadius).add(sunMesh.position);
               triggerExplosion(shipPos.clone(), 'The Sun', true);
             }
 
@@ -2753,6 +2754,8 @@ const Index = () => {
                 const bodyRadius = b.mesh.userData?.radius || (b.type === 'moon' ? 0.3 : 1.0);
                 const dist = shipPos.distanceTo(wp);
                 if (dist < bodyRadius + shipRadius) {
+                  // Resolve to the surface so a tiny vessel's blast is not buried by a large frame step.
+                  shipPos.sub(wp).normalize().multiplyScalar(bodyRadius + shipRadius).add(wp);
                   triggerExplosion(shipPos.clone(), b.mesh.userData?.name || 'Celestial Body', true);
                   break;
                 }
@@ -2765,7 +2768,7 @@ const Index = () => {
               if (rXZ >= 39.0 && rXZ <= 48.0 && Math.abs(shipPos.y) <= 1.8) {
                 for (let i = 0; i < asteroidBodies.length; i += 3) {
                   const ast = asteroidBodies[i];
-                  if (shipPos.distanceTo(ast.pos) < (ast.radius + shipRadius + 0.18)) {
+                  if (shipPos.distanceTo(ast.pos) < (ast.radius + shipRadius)) {
                     triggerExplosion(shipPos.clone(), 'Asteroid Impact', true);
                     break;
                   }
