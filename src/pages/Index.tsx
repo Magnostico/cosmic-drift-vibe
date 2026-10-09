@@ -7,8 +7,23 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import * as TWEEN from '@tweenjs/tween.js';
 import { SpaceAudioEngine } from '../lib/spaceAudio';
-import { dampingFactor, explosionScale, FLIGHT_TUNING, gearForThrust, VESSEL_SCALE } from '../lib/flightTuning';
+import {
+  calculateLaserProximityScale,
+  calculateOrbitalAltitude,
+  calculateOrbitalAssist,
+  calculateOrbitalInsertionArc,
+  calculateOrbitalRadius,
+  calculatePlanetProximityScale,
+  calculateVesselProximityScale,
+  dampingFactor,
+  explosionScale,
+  FLIGHT_CAMERA_OFFSET,
+  FLIGHT_TUNING,
+  gearForThrust,
+  VESSEL_SCALE,
+} from '../lib/flightTuning';
 import { calculateMissionProgress, formatMissionDistance, getMissionByIndex, type Mission } from '../lib/missions';
+import { getPlanetInfo } from '../lib/planetData';
 import '../styles/universe.css';
 
 const Index = () => {
@@ -161,34 +176,258 @@ const Index = () => {
     });
     sceneSS.add(new THREE.Mesh(coronaGeo, coronaMat));
 
-    // ── ATMOSPHERE SHADER FACTORY ──
+    // ── PROCEDURAL / FALLBACK TEXTURE HELPERS ──
+    function createColorTex(hex: number) {
+      const c = document.createElement('canvas');
+      c.width = 32; c.height = 32;
+      const ctx = c.getContext('2d')!;
+      const col = new THREE.Color(hex);
+      ctx.fillStyle = col.getStyle();
+      ctx.fillRect(0, 0, 32, 32);
+      return new THREE.CanvasTexture(c);
+    }
+    const dummyWhiteTex = createColorTex(0xffffff);
+    const dummyBlackTex = createColorTex(0x000000);
+
+    // ── ATMOSPHERE SHADER FACTORY (DYNAMIC DAY/NIGHT SOLAR SCATTERING) ──
     function createAtmosphere(planetRadius: number, color: string, scale=1.15) {
       const geo = new THREE.SphereGeometry(planetRadius * scale, 32, 32);
       const mat = new THREE.ShaderMaterial({
         uniforms: {
-          c: { value: 0.4 }, p: { value: 5.0 },
+          c: { value: 0.4 }, p: { value: 4.8 },
           glowColor: { value: new THREE.Color(color) },
-          viewVector: { value: new THREE.Vector3() }
+          viewVector: { value: new THREE.Vector3() },
+          sunPosition: { value: sunMesh.position }
         },
         vertexShader: `
           uniform vec3 viewVector;
-          varying float intensity;
+          uniform vec3 sunPosition;
+          varying float vIntensity;
+          varying float vSunFactor;
           void main() {
             vec3 vNormal = normalize(normalMatrix * normal);
             vec3 vNormel = normalize(normalMatrix * viewVector);
-            intensity = pow(max(0.0, 0.5 - dot(vNormal, vNormel)), 4.0);
+            vIntensity = pow(max(0.0, 0.58 - dot(vNormal, vNormel)), 3.2);
+
+            vec4 worldPos = modelMatrix * vec4(position, 1.0);
+            vec3 worldNorm = normalize((modelMatrix * vec4(normal, 0.0)).xyz);
+            vec3 sunDir = normalize(sunPosition - worldPos.xyz);
+            vSunFactor = smoothstep(-0.25, 0.35, dot(worldNorm, sunDir));
+
             gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
           }`,
         fragmentShader: `
           uniform vec3 glowColor;
-          varying float intensity;
+          varying float vIntensity;
+          varying float vSunFactor;
           void main() {
-            gl_FragColor = vec4(glowColor, intensity);
+            float alpha = vIntensity * (0.12 + 0.88 * vSunFactor);
+            vec3 col = glowColor * (0.85 + 0.45 * vSunFactor);
+            gl_FragColor = vec4(col, alpha);
           }`,
         side: THREE.FrontSide, blending: THREE.AdditiveBlending,
         transparent: true, depthWrite: false
       });
       return new THREE.Mesh(geo, mat);
+    }
+
+    // ── DYNAMIC DAY/NIGHT PLANET SHADER FACTORY ──
+    interface PlanetShaderOptions {
+      dayMap: THREE.Texture;
+      nightMap?: THREE.Texture | null;
+      normalMap?: THREE.Texture | null;
+      specularMap?: THREE.Texture | null;
+      atmosphereColor?: string | null;
+      atmosphereStrength?: number;
+      sunsetTint?: THREE.Color;
+      sunsetStrength?: number;
+      roughness?: number;
+      cityLightsIntensity?: number;
+    }
+
+    function createPlanetShaderMaterial(options: PlanetShaderOptions) {
+      return new THREE.ShaderMaterial({
+        uniforms: {
+          uDayMap: { value: options.dayMap },
+          uNightMap: { value: options.nightMap || dummyBlackTex },
+          uHasNightMap: { value: options.nightMap ? 1.0 : 0.0 },
+          uNormalMap: { value: options.normalMap || dummyBlackTex },
+          uHasNormalMap: { value: options.normalMap ? 1.0 : 0.0 },
+          uSpecularMap: { value: options.specularMap || dummyBlackTex },
+          uHasSpecularMap: { value: options.specularMap ? 1.0 : 0.0 },
+          uSunPosition: { value: sunMesh.position },
+          uSunColor: { value: new THREE.Color(0xfff5e6) },
+          uAmbientNight: { value: new THREE.Color(0x090f17) },
+          uSunsetTint: { value: options.sunsetTint || new THREE.Color(0xff6622) },
+          uSunsetStrength: { value: options.sunsetStrength ?? 0.38 },
+          uAtmosphereColor: { value: options.atmosphereColor ? new THREE.Color(options.atmosphereColor) : new THREE.Color(0x000000) },
+          uAtmosphereStrength: { value: options.atmosphereStrength ?? (options.atmosphereColor ? 0.38 : 0.0) },
+          uRoughness: { value: options.roughness ?? 0.75 },
+          uCityLightsIntensity: { value: options.cityLightsIntensity ?? 2.4 }
+        },
+        vertexShader: `
+          varying vec2 vUv;
+          varying vec3 vWorldPosition;
+          varying vec3 vWorldNormal;
+          varying vec3 vViewPosition;
+
+          void main() {
+            vUv = uv;
+            vec4 worldPos = modelMatrix * vec4(position, 1.0);
+            vWorldPosition = worldPos.xyz;
+            vWorldNormal = normalize((modelMatrix * vec4(normal, 0.0)).xyz);
+            vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+            vViewPosition = -mvPos.xyz;
+            gl_Position = projectionMatrix * mvPos;
+          }
+        `,
+        fragmentShader: `
+          uniform sampler2D uDayMap;
+          uniform sampler2D uNightMap;
+          uniform float uHasNightMap;
+          uniform sampler2D uNormalMap;
+          uniform float uHasNormalMap;
+          uniform sampler2D uSpecularMap;
+          uniform float uHasSpecularMap;
+
+          uniform vec3 uSunPosition;
+          uniform vec3 uSunColor;
+          uniform vec3 uAmbientNight;
+          uniform vec3 uSunsetTint;
+          uniform float uSunsetStrength;
+          uniform vec3 uAtmosphereColor;
+          uniform float uAtmosphereStrength;
+          uniform float uRoughness;
+          uniform float uCityLightsIntensity;
+
+          varying vec2 vUv;
+          varying vec3 vWorldPosition;
+          varying vec3 vWorldNormal;
+          varying vec3 vViewPosition;
+
+          void main() {
+            vec3 norm = normalize(vWorldNormal);
+            vec3 viewDir = normalize(cameraPosition - vWorldPosition);
+            vec3 sunDir = normalize(uSunPosition - vWorldPosition);
+
+            if (uHasNormalMap > 0.5) {
+              vec3 nMap = texture2D(uNormalMap, vUv).xyz * 2.0 - 1.0;
+              norm = normalize(norm + nMap * 0.28);
+            }
+
+            float nDotL = dot(norm, sunDir);
+
+            // Dynamic Day / Night terminator transition
+            float dayFactor = smoothstep(-0.10, 0.22, nDotL);
+
+            // Twilight & Sunset scattering along the terminator boundary
+            float terminatorBand = smoothstep(0.0, 0.24, 1.0 - abs(nDotL * 4.2));
+            vec3 sunsetGlow = uSunsetTint * (terminatorBand * uSunsetStrength);
+
+            // Day Side: Direct sunlight diffuse shading
+            vec4 dayTex = texture2D(uDayMap, vUv);
+            float diffuseSun = max(0.0, nDotL);
+            vec3 dayLitColor = dayTex.rgb * uSunColor * (0.85 + 0.38 * diffuseSun);
+
+            // Night Side: Deep space starlight
+            vec3 nightColor = dayTex.rgb * uAmbientNight;
+
+            // Earth Night City Lights (only visible on dark hemisphere)
+            if (uHasNightMap > 0.5) {
+              vec4 nightLights = texture2D(uNightMap, vUv);
+              float nightMask = smoothstep(0.08, -0.16, nDotL);
+              vec3 cityGlow = vec3(1.0, 0.88, 0.52) * nightLights.rgb * uCityLightsIntensity;
+              nightColor += cityGlow * nightMask;
+            }
+
+            // Specular reflection (Sun glint on oceans)
+            vec3 specColor = vec3(0.0);
+            if (nDotL > 0.0) {
+              vec3 halfVec = normalize(sunDir + viewDir);
+              float specAngle = max(0.0, dot(norm, halfVec));
+              float specPower = pow(specAngle, 28.0);
+
+              if (uHasSpecularMap > 0.5) {
+                vec4 specMask = texture2D(uSpecularMap, vUv);
+                specColor = uSunColor * specPower * specMask.r * 1.35 * dayFactor;
+              } else {
+                specColor = uSunColor * specPower * (1.0 - uRoughness) * 0.16 * dayFactor;
+              }
+            }
+
+            vec3 finalColor = mix(nightColor, dayLitColor, dayFactor);
+            finalColor += sunsetGlow * dayTex.rgb;
+            finalColor += specColor;
+
+            // Day-facing atmospheric limb fresnel
+            if (uAtmosphereStrength > 0.0) {
+              float fresnel = pow(1.0 - max(0.0, dot(norm, viewDir)), 3.2);
+              float sunFacingFresnel = fresnel * smoothstep(-0.2, 0.3, nDotL);
+              finalColor += uAtmosphereColor * (sunFacingFresnel * uAtmosphereStrength);
+            }
+
+            gl_FragColor = vec4(finalColor, 1.0);
+          }
+        `
+      });
+    }
+
+    function createEarthCloudsMaterial(cloudTex: THREE.Texture) {
+      return new THREE.ShaderMaterial({
+        uniforms: {
+          uCloudMap: { value: cloudTex },
+          uSunPosition: { value: sunMesh.position },
+          uSunColor: { value: new THREE.Color(0xfff6ea) },
+          uSunsetTint: { value: new THREE.Color(0xff6622) },
+        },
+        vertexShader: `
+          varying vec2 vUv;
+          varying vec3 vWorldPosition;
+          varying vec3 vWorldNormal;
+
+          void main() {
+            vUv = uv;
+            vec4 worldPos = modelMatrix * vec4(position, 1.0);
+            vWorldPosition = worldPos.xyz;
+            vWorldNormal = normalize((modelMatrix * vec4(normal, 0.0)).xyz);
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform sampler2D uCloudMap;
+          uniform vec3 uSunPosition;
+          uniform vec3 uSunColor;
+          uniform vec3 uSunsetTint;
+
+          varying vec2 vUv;
+          varying vec3 vWorldPosition;
+          varying vec3 vWorldNormal;
+
+          void main() {
+            vec4 cloudTex = texture2D(uCloudMap, vUv);
+            if (cloudTex.r < 0.04) discard;
+
+            vec3 norm = normalize(vWorldNormal);
+            vec3 sunDir = normalize(uSunPosition - vWorldPosition);
+            float nDotL = dot(norm, sunDir);
+
+            float dayFactor = smoothstep(-0.08, 0.24, nDotL);
+            float terminatorBand = smoothstep(0.0, 0.25, 1.0 - abs(nDotL * 3.8));
+
+            vec3 cloudDayColor = uSunColor * 1.15;
+            vec3 cloudSunset = uSunsetTint * 1.35 * terminatorBand;
+            vec3 cloudNightColor = vec3(0.03, 0.05, 0.08);
+
+            vec3 finalCloud = mix(cloudNightColor, cloudDayColor, dayFactor) + cloudSunset;
+            float alpha = cloudTex.r * (0.12 + 0.75 * dayFactor + 0.25 * terminatorBand);
+
+            gl_FragColor = vec4(finalCloud, alpha);
+          }
+        `,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
     }
 
     // ── RING TEXTURE ──
@@ -228,6 +467,7 @@ const Index = () => {
     const ssBodies: any[] = [];
     const atmosphereMeshes: THREE.Mesh[] = [];
     const orbitLineObjects: THREE.Line[] = [];
+    let earthCloudMesh: THREE.Mesh | null = null;
 
     planetsData.forEach(d => {
       const sys = new THREE.Object3D();
@@ -235,14 +475,34 @@ const Index = () => {
       let mat;
 
       if (d.isEarth) {
-        mat = new THREE.MeshStandardMaterial({
-          map: texLoader.load('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_atmos_2048.jpg'),
-          normalMap: texLoader.load('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_normal_2048.jpg'),
-          roughness: 0.7
+        const earthDayTex = texLoader.load('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_atmos_2048.jpg');
+        const earthNormalTex = texLoader.load('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_normal_2048.jpg');
+        const earthNightTex = texLoader.load('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_lights_2048.png');
+        const earthSpecularTex = texLoader.load('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_specular_2048.jpg');
+
+        mat = createPlanetShaderMaterial({
+          dayMap: earthDayTex,
+          nightMap: earthNightTex,
+          normalMap: earthNormalTex,
+          specularMap: earthSpecularTex,
+          atmosphereColor: '#5599ff',
+          atmosphereStrength: 0.45,
+          sunsetTint: new THREE.Color(0xff6622),
+          sunsetStrength: 0.52,
+          roughness: 0.65,
+          cityLightsIntensity: 2.6
         });
       } else {
         const url = 'https://wsrv.nl/?url=www.solarsystemscope.com/textures/download/' + d.tex + '&output=jpg';
-        mat = new THREE.MeshStandardMaterial({ map: texLoader.load(url), roughness: 0.85 });
+        const dayTex = texLoader.load(url);
+        mat = createPlanetShaderMaterial({
+          dayMap: dayTex,
+          atmosphereColor: d.atm,
+          atmosphereStrength: d.atm ? 0.35 : 0.0,
+          sunsetTint: d.atm ? new THREE.Color(d.atm) : new THREE.Color(0xff8833),
+          sunsetStrength: d.atm ? 0.42 : 0.16,
+          roughness: 0.85
+        });
       }
 
       const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 64, 64), mat);
@@ -283,18 +543,22 @@ const Index = () => {
 
       // Earth extras
       if (d.isEarth) {
-        const cloudMesh = new THREE.Mesh(new THREE.SphereGeometry(1.02, 64, 64), new THREE.MeshStandardMaterial({
-          map: texLoader.load('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_clouds_1024.png'),
-          transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false
-        }));
+        const cloudTex = texLoader.load('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_clouds_1024.png');
+        const cloudMesh = new THREE.Mesh(new THREE.SphereGeometry(1.02, 64, 64), createEarthCloudsMaterial(cloudTex));
         mesh.add(cloudMesh);
+        earthCloudMesh = cloudMesh;
 
         const mSys = new THREE.Object3D(); sys.add(mSys);
-        const mMesh = new THREE.Mesh(new THREE.SphereGeometry(0.3, 48, 48), new THREE.MeshStandardMaterial({
-          map: texLoader.load('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/moon_1024.jpg'),
-          bumpMap: texLoader.load('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/moon_bump_1k.jpg'),
-          bumpScale: 0.02, roughness: 0.9
-        }));
+        const moonTex = texLoader.load('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/moon_1024.jpg');
+        const mMesh = new THREE.Mesh(
+          new THREE.SphereGeometry(0.3, 48, 48),
+          createPlanetShaderMaterial({
+            dayMap: moonTex,
+            roughness: 0.95,
+            sunsetStrength: 0.14,
+            sunsetTint: new THREE.Color(0xddaa77)
+          })
+        );
         mMesh.position.x = 3.2;
         mMesh.castShadow = true; mMesh.receiveShadow = true;
         mMesh.userData = { name:'The Moon', type:'Natural Satellite', radius:0.3, mass:'7.35×10²² kg', radiusStr:'1,737 km', period:'27 days', temp:'-173 to 127°C', moons:'0' };
@@ -330,8 +594,15 @@ const Index = () => {
         ];
         galileanMoons.forEach(gm => {
           const gSys = new THREE.Object3D(); sys.add(gSys);
-          const gMesh = new THREE.Mesh(new THREE.SphereGeometry(gm.r, 32, 32),
-            new THREE.MeshStandardMaterial({ color: gm.color, roughness: 0.9 }));
+          const gMesh = new THREE.Mesh(
+            new THREE.SphereGeometry(gm.r, 32, 32),
+            createPlanetShaderMaterial({
+              dayMap: createColorTex(gm.color),
+              roughness: 0.9,
+              sunsetStrength: 0.18,
+              sunsetTint: new THREE.Color(0xffaa55)
+            })
+          );
           gMesh.position.x = gm.dist;
           gMesh.castShadow = true;
           gMesh.userData = { name:gm.name, type:'Galilean Moon', radius:gm.r, mass:'—', radiusStr:'—', period:'—', temp:'—', moons:'0' };
@@ -344,8 +615,16 @@ const Index = () => {
       // Saturn: Titan
       if (d.name === 'Saturn') {
         const titanSys = new THREE.Object3D(); sys.add(titanSys);
-        const titanMesh = new THREE.Mesh(new THREE.SphereGeometry(0.5, 32, 32),
-          new THREE.MeshStandardMaterial({ color: 0xcc9944, roughness: 0.7 }));
+        const titanMesh = new THREE.Mesh(
+          new THREE.SphereGeometry(0.5, 32, 32),
+          createPlanetShaderMaterial({
+            dayMap: createColorTex(0xcc9944),
+            atmosphereColor: '#cc7700',
+            atmosphereStrength: 0.48,
+            sunsetStrength: 0.45,
+            sunsetTint: new THREE.Color(0xff7700)
+          })
+        );
         titanMesh.position.x = 9;
         titanMesh.castShadow = true;
         const titanAtm = createAtmosphere(0.5, '#cc7700', 1.3);
@@ -357,6 +636,37 @@ const Index = () => {
         ssBodies.push({ type:'moon', pivot:titanSys, speed:0.008, mesh:titanMesh, gravMass:8 });
       }
     });
+
+    // ── 3D HOLOGRAPHIC PLANET SELECTION RETICLE ──
+    const selectionGroup = new THREE.Group();
+    selectionGroup.visible = false;
+    sceneSS.add(selectionGroup);
+
+    const selRingGeo = new THREE.RingGeometry(1.24, 1.30, 64);
+    const selRingMat = new THREE.MeshBasicMaterial({
+      color: 0x4fc3f7,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.85,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+    const selRingMesh = new THREE.Mesh(selRingGeo, selRingMat);
+    selRingMesh.rotation.x = Math.PI / 2;
+    selectionGroup.add(selRingMesh);
+
+    const selRing2Geo = new THREE.RingGeometry(1.42, 1.46, 64);
+    const selRing2Mat = new THREE.MeshBasicMaterial({
+      color: 0x81d4fa,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.45,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+    const selRing2Mesh = new THREE.Mesh(selRing2Geo, selRing2Mat);
+    selRing2Mesh.rotation.x = Math.PI / 2;
+    selectionGroup.add(selRing2Mesh);
 
     // ── ASTEROID BELT ──
     const astMat = new THREE.MeshStandardMaterial({ color: 0x777777, roughness: 0.95 });
@@ -1880,18 +2190,136 @@ const Index = () => {
     const mouse = new THREE.Vector2();
     let targetPlanet: THREE.Mesh | null = null;
     let targetPlanetData: any = null;
+    let selectedPlanetMesh: THREE.Mesh | null = null;
+    const lastPlanetTargetPos = new THREE.Vector3();
+    let lastPlanetTargetPosValid = false;
+
+    function showPlanetOverlay(mesh: THREE.Mesh) {
+      selectedPlanetMesh = mesh;
+      const rawName = mesh.userData?.name || 'Celestial Body';
+      const info = getPlanetInfo(rawName);
+
+      const overlay = document.getElementById('planet-info-overlay');
+      if (!overlay) return;
+
+      overlay.style.setProperty('--planet-accent', info.color);
+      overlay.style.borderColor = info.color;
+      overlay.style.boxShadow = `0 16px 40px rgba(0, 0, 0, 0.75), 0 0 28px ${info.color}33, inset 0 1px 0 rgba(255, 255, 255, 0.1)`;
+
+      const nameEl = document.getElementById('planet-overlay-name');
+      if (nameEl) nameEl.innerText = info.name;
+
+      const classEl = document.getElementById('planet-overlay-class');
+      if (classEl) classEl.innerText = info.classification;
+
+      const taglineEl = document.getElementById('planet-overlay-tagline');
+      if (taglineEl) taglineEl.innerText = info.tagline;
+
+      const descEl = document.getElementById('planet-overlay-desc');
+      if (descEl) descEl.innerText = info.overview;
+
+      const avatarEl = document.getElementById('planet-overlay-avatar');
+      if (avatarEl) {
+        avatarEl.style.background = `radial-gradient(circle at 35% 35%, ${info.color}, #071018)`;
+        avatarEl.style.borderColor = info.color;
+        avatarEl.style.boxShadow = `0 0 14px ${info.color}`;
+      }
+
+      // Specifications
+      const sMass = document.getElementById('spec-val-mass');
+      if (sMass) sMass.innerText = info.mass;
+      const sRadius = document.getElementById('spec-val-radius');
+      if (sRadius) sRadius.innerText = info.radius;
+      const sPeriod = document.getElementById('spec-val-period');
+      if (sPeriod) sPeriod.innerText = info.orbitalPeriod;
+      const sRot = document.getElementById('spec-val-rotation');
+      if (sRot) sRot.innerText = info.rotationPeriod;
+      const sTemp = document.getElementById('spec-val-temp');
+      if (sTemp) sTemp.innerText = info.surfaceTemp;
+      const sGrav = document.getElementById('spec-val-gravity');
+      if (sGrav) sGrav.innerText = info.gravity;
+      const sMoons = document.getElementById('spec-val-moons');
+      if (sMoons) sMoons.innerText = info.moons;
+      const sAtm = document.getElementById('spec-val-atmosphere');
+      if (sAtm) sAtm.innerText = info.atmosphere;
+
+      // Highlights
+      const highlightsEl = document.getElementById('planet-overlay-highlights');
+      if (highlightsEl) {
+        highlightsEl.innerHTML = '';
+        info.highlights.forEach(h => {
+          const li = document.createElement('li');
+          li.innerText = h;
+          highlightsEl.appendChild(li);
+        });
+      }
+
+      // Tags
+      const tagsEl = document.getElementById('planet-overlay-tags');
+      if (tagsEl) {
+        tagsEl.innerHTML = '';
+        info.tags.forEach(t => {
+          const sp = document.createElement('span');
+          sp.className = 'planet-tag-pill';
+          sp.innerText = t;
+          tagsEl.appendChild(sp);
+        });
+      }
+
+      // Reveal overlay
+      overlay.classList.remove('overlay-hidden');
+
+      // Update 3D selection reticle
+      selectionGroup.visible = true;
+      selRingMat.color.set(info.color);
+      selRing2Mat.color.set(info.secondaryColor || info.color);
+      const r = (mesh.userData?.radius || 1);
+      selectionGroup.scale.set(r, r, r);
+
+      // Sync navigation active state
+      document.querySelectorAll('#planet-navigator button').forEach(btn => btn.classList.remove('nav-active'));
+      const navBtn = document.getElementById('nav-' + rawName);
+      if (navBtn) navBtn.classList.add('nav-active');
+    }
+
+    function hidePlanetOverlay() {
+      const overlay = document.getElementById('planet-info-overlay');
+      if (overlay) overlay.classList.add('overlay-hidden');
+      selectionGroup.visible = false;
+      selectedPlanetMesh = null;
+      document.querySelectorAll('#planet-navigator button').forEach(btn => btn.classList.remove('nav-active'));
+    }
 
     const onClick = (e: MouseEvent) => {
-      if (activeScene!=='solarSystem'||flightModeActive||(e.target as HTMLElement).tagName==='BUTTON'||(e.target as HTMLElement).closest('#target-marker')) return;
-      mouse.x = (e.clientX/window.innerWidth)*2-1;
-      mouse.y = -(e.clientY/window.innerHeight)*2+1;
+      if (
+        activeScene !== 'solarSystem' ||
+        flightModeActive ||
+        (e.target as HTMLElement).tagName === 'BUTTON' ||
+        (e.target as HTMLElement).closest('#target-marker') ||
+        (e.target as HTMLElement).closest('#planet-info-overlay')
+      ) return;
+
+      mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
       raycaster.setFromCamera(mouse, camera);
-      const hits = raycaster.intersectObjects(interactables, false);
-      const hit = hits.find(h => interactables.includes(h.object as THREE.Mesh));
-      if (hit) {
+      const hits = raycaster.intersectObjects(interactables, true);
+      let hitMesh: THREE.Mesh | null = null;
+
+      for (const h of hits) {
+        let cur: THREE.Object3D | null = h.object;
+        while (cur && !interactables.includes(cur as THREE.Mesh) && cur.parent) {
+          cur = cur.parent;
+        }
+        if (cur && interactables.includes(cur as THREE.Mesh)) {
+          hitMesh = cur as THREE.Mesh;
+          break;
+        }
+      }
+
+      if (hitMesh) {
         initAudio();
         audio.playPlanetClick();
-        let clickedMesh = hit.object as THREE.Mesh;
+        let clickedMesh = hitMesh;
         const name = clickedMesh.userData?.name;
         if (name) {
           if (name === 'The Sun') {
@@ -1902,24 +2330,24 @@ const Index = () => {
           }
         }
         targetPlanet = clickedMesh;
-        
-        targetPlanetData = ssBodies.find((b: any) => b.mesh===targetPlanet);
+        targetPlanetData = ssBodies.find((b: any) => b.mesh === targetPlanet);
         isTransitioning = true;
+        lastPlanetTargetPosValid = false;
         cameraLight.intensity = 1.0;
         const d = targetPlanet.userData;
         document.getElementById('info-title')!.innerText = d.name;
-        document.getElementById('info-subtitle')!.innerText = d.type||'Celestial Body';
+        document.getElementById('info-subtitle')!.innerText = d.type || 'Celestial Body';
         document.getElementById('planet-stats')!.style.display = 'block';
-        document.getElementById('stat-mass')!.innerText = d.mass||'—';
-        document.getElementById('stat-radius')!.innerText = d.radiusStr||'—';
-        document.getElementById('stat-period')!.innerText = d.period||'—';
-        document.getElementById('stat-temp')!.innerText = d.temp||'—';
-        document.getElementById('stat-moons')!.innerText = d.moons||'—';
+        document.getElementById('stat-mass')!.innerText = d.mass || '—';
+        document.getElementById('stat-radius')!.innerText = d.radiusStr || '—';
+        document.getElementById('stat-period')!.innerText = d.period || '—';
+        document.getElementById('stat-temp')!.innerText = d.temp || '—';
+        document.getElementById('stat-moons')!.innerText = d.moons || '—';
         document.getElementById('btn-back-system')!.style.display = 'block';
         document.getElementById('crosshair')!.style.display = 'block';
         document.getElementById('dynamic-hud')!.style.display = 'block';
-        document.getElementById('ss-info-card')!.classList.remove('panel-hidden');
-        document.getElementById('btn-toggle-ss-info')!.innerText = '✖ Hide';
+
+        showPlanetOverlay(clickedMesh);
       }
     };
     window.addEventListener('click', onClick);
@@ -1974,6 +2402,8 @@ const Index = () => {
       travelTarget = mesh;
       targetPlanet = mesh;
       targetPlanetData = ssBodies.find((b: any) => b.mesh === mesh);
+      lastPlanetTargetPosValid = false;
+      isTransitioning = false;
       cameraLight.intensity = 1.0;
 
       document.getElementById('info-title')!.innerText = d.name || 'Celestial Body';
@@ -1995,6 +2425,8 @@ const Index = () => {
       const navBtn = document.getElementById('nav-' + d.name);
       if (navBtn) navBtn.classList.add('nav-active');
 
+      showPlanetOverlay(mesh);
+
       const wp = new THREE.Vector3();
       mesh.getWorldPosition(wp);
       const r = mesh.userData.radius || 4;
@@ -2006,29 +2438,68 @@ const Index = () => {
 
         shipVelocity.set(0, 0, 0);
         shipAngularVelocity.set(0, 0, 0);
-        // Warp spaceship to planet orbit
-        const destPos = new THREE.Vector3(wp.x + r * 3.5, wp.y + r * 0.8, wp.z + r * 3.5);
-        new TWEEN.Tween(playerShip.position, animationGroup)
-          .to({ x: destPos.x, y: destPos.y, z: destPos.z }, 1200)
-          .easing(TWEEN.Easing.Cubic.InOut)
-          .onComplete(() => {
-            isTraveling = false;
-            showToast(`✅ ÓRBITA ALCANÇADA: ${targetName.toUpperCase()}`);
-          })
-          .start(animationTime);
 
-        // Smoothly orient ship towards planet
-        const lookTgt = wp.clone();
-        const curQuat = playerShip.quaternion.clone();
-        const tgtQuat = new THREE.Quaternion().setFromRotationMatrix(
-          new THREE.Matrix4().lookAt(destPos, lookTgt, new THREE.Vector3(0, 1, 0))
-        );
-        const qObj = { t: 0 };
-        new TWEEN.Tween(qObj, animationGroup)
-          .to({ t: 1 }, 1200)
+        const startPos = {
+          x: playerShip.position.x,
+          y: playerShip.position.y,
+          z: playerShip.position.z,
+        };
+        const targetPos = { x: wp.x, y: wp.y, z: wp.z };
+
+        // Multi-stage realistic orbital insertion along a 3D curved arc
+        const arcProgress = { t: 0 };
+        let phaseReported = false;
+
+        new TWEEN.Tween(arcProgress, animationGroup)
+          .to({ t: 1.0 }, 2200)
           .easing(TWEEN.Easing.Cubic.InOut)
           .onUpdate(() => {
-            playerShip.quaternion.copy(curQuat).slerp(tgtQuat, qObj.t);
+            const arc = calculateOrbitalInsertionArc(startPos, targetPos, r, arcProgress.t);
+            playerShip.position.set(arc.position.x, arc.position.y, arc.position.z);
+
+            // Relativistic dynamic FOV during warp and orbital insertion
+            camera.fov = arc.fov;
+            camera.updateProjectionMatrix();
+
+            // Tangential aerodynamic/orbital banking alignment
+            const fwd = new THREE.Vector3(arc.tangent.x, arc.tangent.y, arc.tangent.z);
+            const up = new THREE.Vector3(0, 1, 0);
+            const right = new THREE.Vector3().crossVectors(fwd, up).normalize();
+            const bankedUp = up.clone().addScaledVector(right, 0.25).normalize();
+            playerShip.quaternion.setFromRotationMatrix(
+              new THREE.Matrix4().lookAt(
+                playerShip.position,
+                playerShip.position.clone().add(fwd),
+                bankedUp
+              )
+            );
+
+            // Phase 2: Retro-thrusters firing at mid-course orbital injection
+            if (arcProgress.t >= 0.52 && !phaseReported) {
+              phaseReported = true;
+              initAudio();
+              audio.playBrake();
+              showToast(`🔥 RETRO-PROPULSORES: DESACELERAÇÃO E INSERÇÃO ORBITAL`);
+            }
+          })
+          .onComplete(() => {
+            isTraveling = false;
+            camera.fov = 60;
+            camera.updateProjectionMatrix();
+
+            // Settle ship into stable tangential circular orbital cruise velocity matching the body
+            const arcEnd = calculateOrbitalInsertionArc(startPos, targetPos, r, 1.0);
+            const tangentSpeed = 0.0035;
+            shipVelocity.set(
+              arcEnd.tangent.x * tangentSpeed,
+              arcEnd.tangent.y * tangentSpeed,
+              arcEnd.tangent.z * tangentSpeed
+            );
+
+            initAudio();
+            audio.playMissionComplete();
+            showToast(`✅ INSERÇÃO CONCLUÍDA: ÓRBITA ESTÁVEL EM ${targetName.toUpperCase()}`);
+            showScorePopup(`🪐 ÓRBITA ESTÁVEL: ${targetName.toUpperCase()}`, '#00ffff');
           })
           .start(animationTime);
 
@@ -2068,6 +2539,15 @@ const Index = () => {
         new TWEEN.Tween(controls.target, animationGroup)
           .to({ x: wp.x, y: wp.y, z: wp.z }, 1000)
           .easing(TWEEN.Easing.Cubic.InOut)
+          .onComplete(() => {
+            isTraveling = false;
+            const curWp = new THREE.Vector3();
+            mesh.getWorldPosition(curWp);
+            controls.target.copy(curWp);
+            lastPlanetTargetPos.copy(curWp);
+            lastPlanetTargetPosValid = true;
+            isTransitioning = false;
+          })
           .start(animationTime);
       }
     }
@@ -2117,6 +2597,7 @@ const Index = () => {
         document.getElementById('dynamic-hud')!.style.display = 'none';
         document.getElementById('orrery-label')!.style.display = 'none';
         document.getElementById('planet-stats')!.style.display = 'none';
+        hidePlanetOverlay();
         initMilkyWay(); fadeOverlay.style.opacity = '0';
       }, 1000);
     });
@@ -2124,12 +2605,14 @@ const Index = () => {
     document.getElementById('btn-back-system')!.addEventListener('click', () => {
       targetPlanet = null; targetPlanetData = null;
       isTransitioning = true; cameraLight.intensity = 0;
+      lastPlanetTargetPosValid = false;
       document.getElementById('btn-back-system')!.style.display = 'none';
       document.getElementById('crosshair')!.style.display = 'none';
       document.getElementById('dynamic-hud')!.style.display = 'none';
       document.getElementById('planet-stats')!.style.display = 'none';
       document.getElementById('info-title')!.innerText = 'Solar System';
       document.getElementById('info-subtitle')!.innerText = 'Interactive Environment';
+      hidePlanetOverlay();
     });
 
     document.getElementById('btn-flight-mode')!.onclick = () => {
@@ -2138,6 +2621,8 @@ const Index = () => {
       audio.playToggle(flightModeActive);
       controls.enabled = !flightModeActive;
       targetPlanet = null;
+      lastPlanetTargetPosValid = false;
+      hidePlanetOverlay();
       document.getElementById('btn-back-system')!.style.display = 'none';
       document.getElementById('crosshair')!.style.display = 'none';
       document.getElementById('dynamic-hud')!.style.display = 'none';
@@ -2153,7 +2638,7 @@ const Index = () => {
       if (flightModeActive) {
         document.getElementById('btn-flight-mode')!.innerText = '✖ Exit Flight';
         document.getElementById('btn-flight-mode')!.className = 'btn-danger';
-        const off = new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.9 + 0.02, TARGET_SHIP_SIZE * 3.8 + 0.08).applyMatrix4(playerShip.matrixWorld);
+        const off = new THREE.Vector3(0, FLIGHT_CAMERA_OFFSET.height, FLIGHT_CAMERA_OFFSET.distance).applyMatrix4(playerShip.matrixWorld);
         camera.position.copy(off);
         updateHealthHUD();
         updateCombatStatsHUD();
@@ -2187,6 +2672,9 @@ const Index = () => {
       if (orreryMode) {
         orbitLineObjects.forEach(l => l.visible = true);
         isTransitioning = false;
+        targetPlanet = null;
+        targetPlanetData = null;
+        lastPlanetTargetPosValid = false;
         camera.position.set(0, 280, 0);
         controls.target.set(0, 0, 0);
         showToast("ORRERY MODE — TOP-DOWN ORBITAL VIEW");
@@ -2225,6 +2713,38 @@ const Index = () => {
       c.classList.toggle('panel-hidden');
       document.getElementById('btn-toggle-ss-info')!.innerText = c.classList.contains('panel-hidden') ? 'ℹ Info' : '✖ Hide';
     });
+
+    const btnCloseOverlay = document.getElementById('btn-close-planet-overlay');
+    if (btnCloseOverlay) {
+      btnCloseOverlay.onclick = (e) => {
+        e.stopPropagation();
+        hidePlanetOverlay();
+      };
+    }
+
+    const btnOverlayTravel = document.getElementById('btn-overlay-travel');
+    if (btnOverlayTravel) {
+      btnOverlayTravel.onclick = (e) => {
+        e.stopPropagation();
+        if (selectedPlanetMesh) {
+          travelToPlanet(selectedPlanetMesh);
+        }
+      };
+    }
+
+    const btnOverlayFocus = document.getElementById('btn-overlay-focus');
+    if (btnOverlayFocus) {
+      btnOverlayFocus.onclick = (e) => {
+        e.stopPropagation();
+        if (selectedPlanetMesh) {
+          targetPlanet = selectedPlanetMesh;
+          targetPlanetData = ssBodies.find((b: any) => b.mesh === targetPlanet);
+          isTransitioning = true;
+          lastPlanetTargetPosValid = false;
+          cameraLight.intensity = 1.0;
+        }
+      };
+    }
 
     function applyShipModel(scene: THREE.Group) {
       playerShip.clear();
@@ -2588,14 +3108,34 @@ const Index = () => {
             if (b.custom3DPivot) {
               b.custom3DPivot.rotation.y += 0.004 * GLOBAL_SPEED_SCALE * dt * FLIGHT_TUNING.referenceFps * timeMultiplier;
             }
+
+            // Proximity-based dynamic planetary scale
+            const wp = new THREE.Vector3();
+            b.mesh.getWorldPosition(wp);
+            const dist = camera.position.distanceTo(wp);
+            const baseR = b.mesh.userData.radius || 1;
+            const targetR = calculatePlanetProximityScale(dist, baseR);
+            b.mesh.scale.set(targetR, targetR, targetR);
           } else if (b.type === 'moon') {
             b.pivot.rotation.y += b.speed * GLOBAL_SPEED_SCALE * dt * FLIGHT_TUNING.referenceFps * timeMultiplier;
             b.mesh.rotation.y += 0.008 * GLOBAL_SPEED_SCALE * dt * FLIGHT_TUNING.referenceFps * timeMultiplier;
             if (b.custom3DPivot) {
               b.custom3DPivot.rotation.y += 0.008 * GLOBAL_SPEED_SCALE * dt * FLIGHT_TUNING.referenceFps * timeMultiplier;
             }
+
+            // Proximity-based dynamic moon scale
+            const wp = new THREE.Vector3();
+            b.mesh.getWorldPosition(wp);
+            const dist = camera.position.distanceTo(wp);
+            const baseR = b.mesh.userData.radius || 0.3;
+            const targetR = calculatePlanetProximityScale(dist, baseR);
+            b.mesh.scale.set(targetR, targetR, targetR);
           }
         });
+
+        if (earthCloudMesh) {
+          earthCloudMesh.rotation.y += 0.0055 * GLOBAL_SPEED_SCALE * dt * FLIGHT_TUNING.referenceFps * timeMultiplier;
+        }
 
         atmosphereMeshes.forEach(atm => {
           const mat = atm.material as THREE.ShaderMaterial;
@@ -2603,6 +3143,9 @@ const Index = () => {
             const wPos = new THREE.Vector3();
             atm.getWorldPosition(wPos);
             mat.uniforms.viewVector.value.copy(camera.position).sub(wPos).normalize();
+            if (mat.uniforms.sunPosition) {
+              mat.uniforms.sunPosition.value.copy(sunMesh.position);
+            }
           }
         });
 
@@ -2675,6 +3218,64 @@ const Index = () => {
             document.getElementById('grav-body')!.innerText = nearestBody || '—';
             document.getElementById('grav-force')!.innerText = (nearestForce * 1e6).toFixed(3);
             document.getElementById('fhud-grav')!.innerText = (nearestForce * 1e6).toFixed(3);
+          }
+
+          // Realistic Orbital Approach Telemetry & Proximity Assist
+          let nearestOrbBody = 'Sun';
+          let nearestOrbDist = playerShip.position.length();
+          let nearestOrbRadius = 14;
+          const nearestOrbWp = new THREE.Vector3(0, 0, 0);
+          let nearestOrbSpeed = 0.005;
+
+          ssBodies.forEach((b: any) => {
+            const bWp = new THREE.Vector3();
+            b.mesh.getWorldPosition(bWp);
+            const d = playerShip.position.distanceTo(bWp);
+            if (d < nearestOrbDist) {
+              nearestOrbDist = d;
+              nearestOrbBody = b.mesh.userData?.name || 'Planet';
+              nearestOrbRadius = b.mesh.userData?.radius || 2;
+              nearestOrbWp.copy(bWp);
+              nearestOrbSpeed = b.speed || 0.01;
+            }
+          });
+
+          const orbAssist = calculateOrbitalAssist(nearestOrbDist, nearestOrbRadius, nearestOrbSpeed);
+          const fhudOrbitRow = document.getElementById('fhud-orbit-row');
+          const fhudAltRow = document.getElementById('fhud-body-alt-row');
+          const fhudOrbitStatus = document.getElementById('fhud-orbit-status');
+          const fhudBodyAlt = document.getElementById('fhud-body-alt');
+
+          if (orbAssist.factor > 0) {
+            if (fhudOrbitRow) fhudOrbitRow.style.display = 'flex';
+            if (fhudAltRow) fhudAltRow.style.display = 'flex';
+            if (fhudOrbitStatus) {
+              fhudOrbitStatus.innerText = `${orbAssist.status}: ${nearestOrbBody.toUpperCase()}`;
+              fhudOrbitStatus.style.color = orbAssist.factor > 0.6 ? '#00ffff' : '#ffaa00';
+            }
+            if (fhudBodyAlt) {
+              const alt = calculateOrbitalAltitude(nearestOrbDist, nearestOrbRadius);
+              fhudBodyAlt.innerText = `${(alt * 3.8).toFixed(1)} M km`;
+            }
+
+            // Natural orbital reference frame assist:
+            // When orbiting close to a planet, gently guide ship with tangential orbital motion
+            if (!isTraveling && orbAssist.factor > 0.15) {
+              const toCenter = new THREE.Vector3().subVectors(playerShip.position, nearestOrbWp);
+              const dist = toCenter.length();
+              if (dist > nearestOrbRadius * 0.8) {
+                const norm = toCenter.normalize();
+                const tangent = new THREE.Vector3(-norm.z, 0, norm.x).normalize();
+                const pullStrength = orbAssist.factor * 0.00035 * dt;
+                // Soft centripetal gravity stabilization
+                shipVelocity.addScaledVector(norm, -pullStrength * 0.8);
+                // Soft tangential orbital cruise alignment
+                shipVelocity.addScaledVector(tangent, pullStrength * 0.6);
+              }
+            }
+          } else {
+            if (fhudOrbitRow) fhudOrbitRow.style.display = 'none';
+            if (fhudAltRow) fhudAltRow.style.display = 'none';
           }
 
           if (currentSpeed > 0.000001) {
@@ -2789,6 +3390,10 @@ const Index = () => {
 
           enemyShips.forEach((enemy) => {
             if (!enemy.active) return;
+
+            const distToCam = enemy.mesh.position.distanceTo(camera.position);
+            const dynamicScale = calculateVesselProximityScale(distToCam, 1.0);
+            enemy.mesh.scale.setScalar(dynamicScale);
 
             const distToPlayer = enemy.mesh.position.distanceTo(playerShip.position);
 
@@ -2906,6 +3511,11 @@ const Index = () => {
             const nextPos = bolt.mesh.position.clone().addScaledVector(bolt.dir, bolt.speed * dt * 50);
             const sweepLine = new THREE.Line3(bolt.prevPos, nextPos);
             bolt.mesh.position.copy(nextPos);
+
+            // Proximity-based visibility scaling for laser plasma bolts
+            const distToCam = bolt.mesh.position.distanceTo(camera.position);
+            const laserScale = calculateLaserProximityScale(distToCam);
+            bolt.mesh.scale.set(laserScale, laserScale, 1.0 + (laserScale - 1.0) * 0.4);
 
             let hit = false;
             const closestPt = new THREE.Vector3();
@@ -3099,11 +3709,11 @@ const Index = () => {
           bloomPass.strength = isExploded ? 0.9 : 0.65;
           const cOff = isExploded
             ? new THREE.Vector3(0, TARGET_SHIP_SIZE * 3.2 + 0.8, TARGET_SHIP_SIZE * 7.5 + 2.0).applyMatrix4(playerShip.matrixWorld)
-            : new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.9 + 0.02, TARGET_SHIP_SIZE * 3.8 + 0.08).applyMatrix4(playerShip.matrixWorld);
+            : new THREE.Vector3(0, FLIGHT_CAMERA_OFFSET.height, FLIGHT_CAMERA_OFFSET.distance).applyMatrix4(playerShip.matrixWorld);
           camera.position.copy(cOff);
           const lookTgt = isExploded
             ? playerShip.position.clone()
-            : new THREE.Vector3(0, TARGET_SHIP_SIZE * 0.2, -TARGET_SHIP_SIZE * 8 - 0.2).applyMatrix4(playerShip.matrixWorld);
+            : new THREE.Vector3(0, FLIGHT_CAMERA_OFFSET.lookTargetY, -FLIGHT_CAMERA_OFFSET.lookTargetLead).applyMatrix4(playerShip.matrixWorld);
           const upVec = new THREE.Vector3(0,1,0).applyQuaternion(playerShip.quaternion);
           if (mesh2 && !isExploded) {
             const sf = new THREE.Vector3(0,0,-1).applyQuaternion(playerShip.quaternion);
@@ -3117,38 +3727,108 @@ const Index = () => {
           beaconGroup.visible = false;
           const markerEl = document.getElementById('mission-nav-marker');
           if (markerEl) markerEl.style.display = 'none';
-          controls.update();
           updateExplosion(dt);
+
+          if (targetPlanet && !isTraveling) {
+            const wp = new THREE.Vector3();
+            targetPlanet.getWorldPosition(wp);
+            const r = targetPlanet.userData.radius || 4;
+
+            if (isTransitioning) {
+              const lerpFactor = dampingFactor(4.2, dt);
+              controls.target.lerp(wp, lerpFactor);
+
+              const targetOffset = new THREE.Vector3(r * 2.8, r * 1.4, r * 2.8);
+              const desiredCamPos = wp.clone().add(targetOffset);
+              camera.position.lerp(desiredCamPos, lerpFactor);
+
+              if (controls.target.distanceTo(wp) < 0.25 && camera.position.distanceTo(desiredCamPos) < 0.5) {
+                controls.target.copy(wp);
+                camera.position.copy(desiredCamPos);
+                isTransitioning = false;
+                lastPlanetTargetPos.copy(wp);
+                lastPlanetTargetPosValid = true;
+              } else {
+                lastPlanetTargetPos.copy(controls.target);
+                lastPlanetTargetPosValid = true;
+              }
+            } else {
+              // Smooth orbit lock: translate both controls.target AND camera.position by exact orbital motion delta
+              if (lastPlanetTargetPosValid) {
+                const delta = new THREE.Vector3().subVectors(wp, lastPlanetTargetPos);
+                controls.target.add(delta);
+                camera.position.add(delta);
+              } else {
+                controls.target.copy(wp);
+              }
+              lastPlanetTargetPos.copy(wp);
+              lastPlanetTargetPosValid = true;
+
+              controls.update();
+            }
+
+            if (targetPlanetData && targetPlanetData.type === 'planet') {
+              const dist = Math.sqrt(targetPlanetData.system.position.x**2 + targetPlanetData.system.position.z**2);
+              document.getElementById('hud-distance')!.innerText = `Distance: ${(dist*3.8).toFixed(1)} M km`;
+              document.getElementById('hud-orbit')!.innerText = `Orbit: ${(targetPlanetData.angle % (Math.PI*2) * 180/Math.PI).toFixed(1)}°`;
+              document.getElementById('hud-speed')!.innerText = `Speed: ${(targetPlanetData.speed*100).toFixed(4)} au/s`;
+            } else if (targetPlanetData && targetPlanetData.type === 'moon') {
+              document.getElementById('hud-distance')!.innerText = `Distance: Orbiting Planet`;
+              document.getElementById('hud-orbit')!.innerText = `Orbit: Satellite`;
+              document.getElementById('hud-speed')!.innerText = `Speed: ${(targetPlanetData.speed*100).toFixed(4)} au/s`;
+            } else if (targetPlanet.userData.name === "The Sun") {
+              document.getElementById('hud-distance')!.innerText = `Distance: 0.0 M km`;
+              document.getElementById('hud-orbit')!.innerText = `Orbit: Center`;
+              document.getElementById('hud-speed')!.innerText = `Speed: 0.0000 au/s`;
+            }
+          } else if (isTransitioning && !orreryMode) {
+            const systemCenter = new THREE.Vector3(0, 0, 0);
+            const systemCamPos = new THREE.Vector3(0, 60, 120);
+            const lerpFactor = dampingFactor(3.5, dt);
+            controls.target.lerp(systemCenter, lerpFactor);
+            camera.position.lerp(systemCamPos, lerpFactor);
+            if (camera.position.distanceTo(systemCamPos) < 1.0 && controls.target.distanceTo(systemCenter) < 0.5) {
+              controls.target.copy(systemCenter);
+              camera.position.copy(systemCamPos);
+              isTransitioning = false;
+            }
+          } else {
+            if (!isTraveling) {
+              controls.update();
+            }
+          }
         }
 
-        // Travel is owned by Tween.js; the flight camera keeps its fixed offset.
-        if (targetPlanet && !flightModeActive && !isTraveling) {
-          const wp = new THREE.Vector3(); targetPlanet.getWorldPosition(wp);
-          controls.target.copy(wp);
-          if (isTransitioning) {
-            const r = targetPlanet.userData.radius || 4;
-            const dp = new THREE.Vector3(wp.x+r*3, wp.y+r*1.5, wp.z+r*3);
-            camera.position.lerp(dp, dampingFactor(3.08, dt));
-            if (camera.position.distanceTo(dp) < 0.5) isTransitioning = false;
+        // Live 3D Selection Reticle and Overlay Telemetry
+        if (selectedPlanetMesh && selectionGroup.visible) {
+          const selPos = new THREE.Vector3();
+          selectedPlanetMesh.getWorldPosition(selPos);
+          selectionGroup.position.copy(selPos);
+          selRingMesh.rotation.z += 0.012;
+          selRing2Mesh.rotation.z -= 0.008;
+
+          const telDistEl = document.getElementById('overlay-tel-dist');
+          if (telDistEl) {
+            const camDist = camera.position.distanceTo(selPos);
+            telDistEl.innerText = `${(camDist * 3.8).toFixed(1)} M km`;
           }
+          const telOrbitEl = document.getElementById('overlay-tel-orbit');
+          const telSpeedEl = document.getElementById('overlay-tel-speed');
           if (targetPlanetData && targetPlanetData.type === 'planet') {
-            const dist = Math.sqrt(targetPlanetData.system.position.x**2 + targetPlanetData.system.position.z**2);
-            document.getElementById('hud-distance')!.innerText = `Distance: ${(dist*3.8).toFixed(1)} M km`;
-            document.getElementById('hud-orbit')!.innerText = `Orbit: ${(targetPlanetData.angle % (Math.PI*2) * 180/Math.PI).toFixed(1)}°`;
-            document.getElementById('hud-speed')!.innerText = `Speed: ${(targetPlanetData.speed*100).toFixed(4)} au/s`;
+            if (telOrbitEl) {
+              const deg = (((targetPlanetData.angle % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2) * 180 / Math.PI).toFixed(1);
+              telOrbitEl.innerText = `${deg}°`;
+            }
+            if (telSpeedEl) {
+              telSpeedEl.innerText = `${(targetPlanetData.speed * 100).toFixed(4)} au/s`;
+            }
           } else if (targetPlanetData && targetPlanetData.type === 'moon') {
-            document.getElementById('hud-distance')!.innerText = `Distance: Orbiting Planet`;
-            document.getElementById('hud-orbit')!.innerText = `Orbit: Satellite`;
-            document.getElementById('hud-speed')!.innerText = `Speed: ${(targetPlanetData.speed*100).toFixed(4)} au/s`;
-          } else if (targetPlanet.userData.name === "The Sun") {
-            document.getElementById('hud-distance')!.innerText = `Distance: 0.0 M km`;
-            document.getElementById('hud-orbit')!.innerText = `Orbit: Center`;
-            document.getElementById('hud-speed')!.innerText = `Speed: 0.0000 au/s`;
+            if (telOrbitEl) telOrbitEl.innerText = 'Satellite';
+            if (telSpeedEl) telSpeedEl.innerText = `${(targetPlanetData.speed * 100).toFixed(4)} au/s`;
+          } else if (selectedPlanetMesh.userData?.name === 'The Sun') {
+            if (telOrbitEl) telOrbitEl.innerText = 'Center (0°)';
+            if (telSpeedEl) telSpeedEl.innerText = '0.0000 au/s';
           }
-        } else if (isTransitioning && !flightModeActive && !orreryMode) {
-          const dp = new THREE.Vector3(controls.target.x, 60, controls.target.z+120);
-          camera.position.lerp(dp, dampingFactor(3.08, dt));
-          if (camera.position.distanceTo(dp) < 1.0) isTransitioning = false;
         }
 
         composer.render();
@@ -3170,6 +3850,9 @@ const Index = () => {
       beaconRing1Geo.dispose(); beaconRingMat.dispose();
       beaconRing2Geo.dispose(); beaconRing2Mat.dispose();
       beaconBeamGeo.dispose(); beaconBeamMat.dispose();
+      sceneSS.remove(selectionGroup);
+      selRingGeo.dispose(); selRingMat.dispose();
+      selRing2Geo.dispose(); selRing2Mat.dispose();
       window.removeEventListener('blur', releaseControls);
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('contextmenu', onContextMenu);
@@ -3253,6 +3936,86 @@ const Index = () => {
           </div>
         </div>
 
+        {/* DEDICATED PLANET INFORMATION OVERLAY (3D SELECTION) */}
+        <div id="planet-info-overlay" className="planet-overlay overlay-hidden">
+          <div className="planet-overlay-header">
+            <div className="planet-header-title-group">
+              <div id="planet-overlay-avatar" className="planet-header-avatar" />
+              <div className="planet-overlay-titles">
+                <div id="planet-overlay-name" className="planet-overlay-h1">Planet</div>
+                <div id="planet-overlay-class" className="planet-class-badge">Celestial Body</div>
+              </div>
+            </div>
+            <button id="btn-close-planet-overlay" className="btn-close-overlay" title="Close Panel">✕</button>
+          </div>
+
+          <div className="planet-telemetry-strip">
+            <div className="telemetry-item">
+              <span className="telemetry-label">Observer Dist</span>
+              <span id="overlay-tel-dist" className="telemetry-value">—</span>
+            </div>
+            <div className="telemetry-item">
+              <span className="telemetry-label">Orbit Angle</span>
+              <span id="overlay-tel-orbit" className="telemetry-value">—</span>
+            </div>
+            <div className="telemetry-item">
+              <span className="telemetry-label">Orbital Speed</span>
+              <span id="overlay-tel-speed" className="telemetry-value">—</span>
+            </div>
+          </div>
+
+          <div className="planet-overlay-body">
+            <div id="planet-overlay-tagline" className="planet-tagline-quote">—</div>
+            <p id="planet-overlay-desc" className="planet-desc-paragraph">—</p>
+
+            <div className="planet-section-label">Physical Specifications</div>
+            <div className="planet-specs-grid">
+              <div className="spec-cell">
+                <span className="spec-cell-label">⚖ Mass</span>
+                <span id="spec-val-mass" className="spec-cell-val">—</span>
+              </div>
+              <div className="spec-cell">
+                <span className="spec-cell-label">📏 Radius</span>
+                <span id="spec-val-radius" className="spec-cell-val">—</span>
+              </div>
+              <div className="spec-cell">
+                <span className="spec-cell-label">⏳ Orbit Period</span>
+                <span id="spec-val-period" className="spec-cell-val">—</span>
+              </div>
+              <div className="spec-cell">
+                <span className="spec-cell-label">⏱ Day Length</span>
+                <span id="spec-val-rotation" className="spec-cell-val">—</span>
+              </div>
+              <div className="spec-cell">
+                <span className="spec-cell-label">🌡 Surface Temp</span>
+                <span id="spec-val-temp" className="spec-cell-val">—</span>
+              </div>
+              <div className="spec-cell">
+                <span className="spec-cell-label">⚛ Gravity</span>
+                <span id="spec-val-gravity" className="spec-cell-val">—</span>
+              </div>
+              <div className="spec-cell">
+                <span className="spec-cell-label">🌕 Moons</span>
+                <span id="spec-val-moons" className="spec-cell-val">—</span>
+              </div>
+              <div className="spec-cell">
+                <span className="spec-cell-label">🌫 Atmosphere</span>
+                <span id="spec-val-atmosphere" className="spec-cell-val">—</span>
+              </div>
+            </div>
+
+            <div className="planet-section-label">Key Highlights</div>
+            <ul id="planet-overlay-highlights" className="planet-highlights-list" />
+
+            <div id="planet-overlay-tags" className="planet-tags-row" />
+          </div>
+
+          <div className="planet-overlay-footer">
+            <button id="btn-overlay-travel" className="btn-warp-planet">🚀 Warp / Fly</button>
+            <button id="btn-overlay-focus" className="btn-focus-planet">👁 Focus Orbit</button>
+          </div>
+        </div>
+
         <div id="planet-navigator">
           <span className="nav-label">🚀 Travel:</span>
           <button id="nav-The Sun"><span className="planet-dot" style={{ background:'#ffdd44' }} />Sun</button>
@@ -3332,6 +4095,14 @@ const Index = () => {
           <div className="hud-row">
             <span>ALT</span>
             <span className="hud-value" id="fhud-alt">—</span>
+          </div>
+          <div className="hud-row" id="fhud-orbit-row" style={{ display:'none' }}>
+            <span>ORBIT</span>
+            <span className="hud-value" id="fhud-orbit-status" style={{ color:'#00ffff' }}>—</span>
+          </div>
+          <div className="hud-row" id="fhud-body-alt-row" style={{ display:'none' }}>
+            <span>PROX ALT</span>
+            <span className="hud-value" id="fhud-body-alt">—</span>
           </div>
           <div className="hud-row" id="fhud-grav-row" style={{ display:'none' }}>
             <span>GRAV PULL</span>
